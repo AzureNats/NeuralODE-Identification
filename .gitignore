@@ -1,0 +1,12 @@
+__pycache__/
+.vscode/
+beta/
+engine/
+viz_results/
+*.csv
+*.txt
+*.log
+*.pkl
+*.pth
+*.pt
+*.png
