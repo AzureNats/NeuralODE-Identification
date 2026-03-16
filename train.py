@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torchdiffeq import odeint
+from torchdiffeq import odeint_adjoint as odeint
 from NeuralODEFunc import CoefficientNet, AerialSystemODE
 from flight_scaler import FlightDataScaler
 from data_processing import FlightDataPreprocessor
@@ -324,7 +324,7 @@ def main():
     plt.xlabel('Epochs')
     plt.ylabel('Loss Value')
     
-    # plt.yscale('log') 
+    plt.yscale('log') 
     plt.legend()
     plt.grid(True, which="both", ls="--", alpha=0.5)
     
