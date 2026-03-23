@@ -172,7 +172,16 @@ class FlightDataPreprocessor:
         if missing_cols:
             raise ValueError(f"CSV文件缺失必要列: {missing_cols}")
         
-        # 4. 检查数据丢包
+        # 4. 降采样：100Hz -> 50Hz
+        print("正在将 100Hz 数据降采样为 50Hz (剔除奇数时间戳)...")
+        original_len = len(df)
+        
+        # 将 time 转换为整数，并剔除奇数时间戳
+        time_cents = np.round(df['time'].values * 100).astype(int)
+        df = df[time_cents % 2 == 0].reset_index(drop=True)
+        print(f"降采样完成: {original_len} 行 -> {len(df)} 行。")
+
+        # 5. 检查数据丢包
         if df.isnull().any().any():
             nan_count = df.isnull().sum().sum()
             print(f"警告: 检测到 {nan_count} 个缺失值，正在尝试线性插值修复...")
@@ -183,7 +192,7 @@ class FlightDataPreprocessor:
             
             if df.isnull().any().any():
                 cols_with_nan = df.columns[df.isnull().any()].tolist()
-                raise ValueError(f"数据不可用，请重新采集数据。受影响列: {cols_with_nan}")
+                raise ValueError(f"数据不可用，请重新采集。受影响列: {cols_with_nan}")
             else:
                 print("缺失值插值修复成功。")
         
