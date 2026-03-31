@@ -104,7 +104,7 @@ class HybridLoss(nn.Module):
         
         # 计算 6 个物理维度各自的真实方差 -> 形状: (6,)
         gt_var = torch.var(gt_force_real, dim=(0, 1), unbiased=False)
-        gt_var = torch.clamp(gt_var, min=1e-6)
+        gt_var = torch.clamp(gt_var, min=1e-3)
         
         loss_force = torch.mean(mse_per_dim / gt_var)
 
@@ -125,10 +125,11 @@ def main():
     CONFIG = {
         # 路径配置
         'paths': {
-            'raw_csv': 'flight_data_preprocessing_test.csv',       # 原始飞行数据 (CSV格式)
-            'scaler': 'scaler_debug.pkl',             # 归一化参数保存路径 (Pickle)
-            'dataset': 'dataset_debug.pt',            # 预处理后的数据集保存路径 (PyTorch Tensor)
-            'model_save': 'model_weights.pth'   # 模型权重保存路径 (PyTorch Model)
+            'raw_csv': 'Document0.csv',          # 原始飞行数据 (CSV格式)
+            'scaler': 'scaler0.pkl',             # 归一化参数保存路径 (Pickle)
+            'dataset': 'dataset0.pt',            # 预处理后的数据集保存路径 (PyTorch Tensor)
+            'pre_wei': 'pretrained_coeffs.pth',  # 预训练模型权重路径 (PyTorch Model)
+            'model_save': 'model_weights.pth'    # 模型权重保存路径 (PyTorch Model)
         },
         
         # 数据预处理参数
@@ -147,16 +148,17 @@ def main():
         # 训练超参数
         'train': {
             'batch_size': 64,          # 批大小
-            'learning_rate': 1e-4,     # 初始学习率
-            'epochs': 50,              # 总训练轮数
+            'learning_rate': 1e-5,     # 初始学习率
+            'min_lr':1e-7,             # 最小学习率
+            'epochs':  50,             # 总训练轮数
             'save_interval': 10,       # 每隔多少个Epoch保存一次模型
             'num_workers': 0,          # DataLoader工作线程数 (Windows建议设为0)
         },
 
         # 损失函数权重
         'loss': {
-            'w_traj': 1.0,             # 轨迹积分误差的权重 (L_traj)
-            'w_force': 0.1,            # 动力学/力误差的权重 (L_force)
+            'w_traj': 0.1,             # 轨迹积分误差的权重 (L_traj)
+            'w_force': 1.0,            # 动力学/力误差的权重 (L_force)
         },
         
         # 物理参数
@@ -168,9 +170,9 @@ def main():
             'base_altitude': 0.0,       # 起飞高度 (m)
             'T_offset': [0, 0, -0.75],  # 推力线偏心距 (m)
             'I': [                      # 惯量 (kg*m^2)
-                [ 539.246, -6.59598, -105.374],
-                [-6.59598, 694.0101, -33.6328],
-                [-105.374, -33.6328, 1018.916]
+                [ 539.246,      0.0, -105.374],
+                [     0.0, 694.0101,      0.0],
+                [-105.374,      0.0, 1018.916]
             ]
         }
     }
@@ -216,6 +218,7 @@ def main():
 
     # 3. 实例化模型
     net = CoefficientNet().to(device)
+    net.load_state_dict(torch.load(CONFIG['paths']['pre_wei']))
     model = AerialSystemODE(
         neural_net=net, 
         known_props=CONFIG['props'], 
@@ -223,6 +226,11 @@ def main():
         device=device
     ).to(device)
     optimizer = optim.Adam(model.parameters(), lr=CONFIG['train']['learning_rate'])
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, 
+        T_max = CONFIG['train']['epochs'], 
+        eta_min = CONFIG['train']['min_lr']
+    )
     loss_fn = HybridLoss(
         weight_traj = CONFIG['loss']['w_traj'],
         weight_force = CONFIG['loss']['w_force']
@@ -239,6 +247,12 @@ def main():
 
     # 5. 训练主循环
     print("开始训练...")
+    # 定义预热参数
+    warmup_start_epoch = 10  # 从第几轮开始引入轨迹 Loss
+    warmup_epochs = 30       # 预热过渡期需要多少轮
+    start_w_traj = 1e-3      # 轨迹 Loss 的初始极小权重
+    end_w_traj = CONFIG['loss']['w_traj'] # 最终目标权重
+
     for epoch in range(CONFIG['train']['epochs']):
         model.train()
 
@@ -246,14 +260,16 @@ def main():
         epoch_loss_traj = 0.0
         epoch_loss_force = 0.0
 
-        # 动态调整 Loss 权重 (两阶段训练策略)
-        if epoch < 10:
-            # 前 10 轮：关闭轨迹积分 Loss，仅拟合瞬间的气动力 (F=ma)
+        # 动态调整 Loss 权重 (指数预热策略)
+        if epoch < warmup_start_epoch:
+            # 前 10 轮：关闭轨迹积分 Loss，仅拟合瞬间的气动力
             loss_fn.w_traj = 0.0
             loss_fn.w_force = 1.0
         else:
-            # 10 轮之后：开启轨迹积分 Loss，进行长程动态微调
-            loss_fn.w_traj = CONFIG['loss']['w_traj']
+            # 10 轮之后：开启轨迹积分 Loss，指数平滑过渡
+            current_step = min(epoch - warmup_start_epoch, warmup_epochs)
+            current_w_traj = start_w_traj * ((end_w_traj / start_w_traj) ** (current_step / warmup_epochs))
+            loss_fn.w_traj = current_w_traj
             loss_fn.w_force = CONFIG['loss']['w_force']
 
         for batch_idx, batch in enumerate(train_loader):
@@ -308,6 +324,7 @@ def main():
 
         print(f"Epoch {epoch} 完成 | 平均 Loss: {avg_total:.6f}")
         
+        scheduler.step()
         if (epoch + 1) % 10 == 0:
             torch.save(model.state_dict(), CONFIG['paths']['model_save'])
             print(f"模型已保存至 {CONFIG['paths']['model_save']}")

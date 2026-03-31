@@ -106,12 +106,12 @@ class AerialSystemODE(nn.Module):
         self.register_buffer('L', torch.tensor(0.0065).to(device))    # 温度递减率 (K/m)
         self.register_buffer('R', torch.tensor(287.05).to(device))    # 气体常数 (J/kg/K)
 
-        # 动力系统拟合系数 c_H_V
-        # T = p[0]*rpm^2 + p[1]*rpm + p[2]
-        self.register_buffer('c_0_15', torch.tensor([4.71865251e-05, -7.27991513e-02, 1.70176257e+02]).to(device))
-        self.register_buffer('c_0_35', torch.tensor([3.96509480e-05, -1.24969118e-01, 2.21010645e+02]).to(device))
-        self.register_buffer('c_3_15', torch.tensor([2.81943710e-05, 3.29894820e-02, -1.68150701e+01]).to(device))
-        self.register_buffer('c_3_35', torch.tensor([2.59178488e-05, -5.41092634e-02, 9.97308307e+01]).to(device))
+        # # 动力系统拟合系数 c_H_V
+        # # T = p[0]*rpm^2 + p[1]*rpm + p[2]
+        # self.register_buffer('c_0_15', torch.tensor([4.71865251e-05, -7.27991513e-02, 1.70176257e+02]).to(device))
+        # self.register_buffer('c_0_35', torch.tensor([3.96509480e-05, -1.24969118e-01, 2.21010645e+02]).to(device))
+        # self.register_buffer('c_3_15', torch.tensor([2.81943710e-05, 3.29894820e-02, -1.68150701e+01]).to(device))
+        # self.register_buffer('c_3_35', torch.tensor([2.59178488e-05, -5.41092634e-02, 9.97308307e+01]).to(device))
 
     def set_control_context(self, times, controls):
         """
@@ -186,46 +186,66 @@ class AerialSystemODE(nn.Module):
         
         return u_t
     
-    def calculate_thrust(self, z_ned, airspeed_mps, rpm):
-        """
-        基于工况点插值计算推力
+    # def calculate_thrust(self, z_ned, airspeed_mps, rpm):
+    #     """
+    #     基于工况点插值计算推力
         
-        Args:
-            z_ned (Tensor): NED 坐标系下的 z 轴位置 (向下为正, km)
-            airspeed_mps (Tensor): 空速 (m/s)
-            rpm (Tensor): 发动机转速 (rpm)
+    #     Args:
+    #         z_ned (Tensor): NED 坐标系下的 z 轴位置 (向下为正, km)
+    #         airspeed_mps (Tensor): 空速 (m/s)
+    #         rpm (Tensor): 发动机转速 (rpm)
             
-        Returns:
-            thrust (Tensor): 推力 (N)
+    #     Returns:
+    #         thrust (Tensor): 推力 (N)
+    #     """
+    #     # 1. 计算绝对海拔高度 (km)
+    #     alt = (self.base_alt - z_ned) / 1000.0
+        
+    #     # 2. 辅助函数: 多项式计算 ax^2 + bx + c
+    #     def poly_val(coeffs, x):
+    #         return coeffs[0] * (x ** 2) + coeffs[1] * x + coeffs[2]
+
+    #     # 3. 计算四个基准工况点在当前 RPM 下的推力
+    #     t_0_15 = poly_val(self.c_0_15, rpm)
+    #     t_0_35 = poly_val(self.c_0_35, rpm)
+    #     t_3_15 = poly_val(self.c_3_15, rpm)
+    #     t_3_35 = poly_val(self.c_3_35, rpm)
+
+    #     # 4. 计算插值权重
+    #     # 速度权重 w_v (15~35 m/s)
+    #     w_v = (airspeed_mps - 15.0) / (35.0 - 15.0)
+    #     # w_v = torch.clamp(w_v, -0.5, 1.5) # 可选: 限制外推程度
+        
+    #     # 高度权重 w_h (0~3 km)
+    #     w_h = (alt - 0.0) / (3.0 - 0.0)
+    #     # w_h = torch.clamp(w_h, -0.2, 1.2) # 可选: 限制外推程度
+
+    #     # 5. 双线性插值
+    #     t_h0 = torch.lerp(t_0_15, t_0_35, w_v)
+    #     t_h3 = torch.lerp(t_3_15, t_3_35, w_v)
+    #     thrust = torch.lerp(t_h0, t_h3, w_h)
+        
+    #     return torch.max(thrust, torch.tensor(0.0).to(thrust.device))
+
+    def calculate_thrust(self, delta_t):
         """
-        # 1. 计算绝对海拔高度 (km)
-        alt = (self.base_alt - z_ned) / 1000.0
+        基于 Simulink 三点插值的推力模型
+        Args:
+            delta_t (Tensor): 油门指令 (0~100)
+        Returns:
+            thrust (Tensor): X轴推力 (N)
+        """
+        dt_val = torch.clamp(delta_t, min=0.0, max=100.0)
         
-        # 2. 辅助函数: 多项式计算 ax^2 + bx + c
-        def poly_val(coeffs, x):
-            return coeffs[0] * (x ** 2) + coeffs[1] * x + coeffs[2]
-
-        # 3. 计算四个基准工况点在当前 RPM 下的推力
-        t_0_15 = poly_val(self.c_0_15, rpm)
-        t_0_35 = poly_val(self.c_0_35, rpm)
-        t_3_15 = poly_val(self.c_3_15, rpm)
-        t_3_35 = poly_val(self.c_3_35, rpm)
-
-        # 4. 计算插值权重
-        # 速度权重 w_v (15~35 m/s)
-        w_v = (airspeed_mps - 15.0) / (35.0 - 15.0)
-        # w_v = torch.clamp(w_v, -0.5, 1.5) # 可选: 限制外推程度
+        # 向量化三点插值
+        # 节点: (0, 0), (80, 982), (100, 1586)
+        thrust = torch.where(
+            dt_val <= 80.0,
+            12.275 * dt_val,                          # 0~80 段斜率: 982/80 = 12.275
+            982.0 + 30.2 * (dt_val - 80.0)            # 80~100 段斜率: (1586-982)/20 = 30.2
+        )
         
-        # 高度权重 w_h (0~3 km)
-        w_h = (alt - 0.0) / (3.0 - 0.0)
-        # w_h = torch.clamp(w_h, -0.2, 1.2) # 可选: 限制外推程度
-
-        # 5. 双线性插值
-        t_h0 = torch.lerp(t_0_15, t_0_35, w_v)
-        t_h3 = torch.lerp(t_3_15, t_3_35, w_v)
-        thrust = torch.lerp(t_h0, t_h3, w_h)
-        
-        return torch.max(thrust, torch.tensor(0.0).to(thrust.device))
+        return thrust
 
     def physics_equations(self, state_real, controls_real, aero_coeffs):
         """
@@ -251,7 +271,8 @@ class AerialSystemODE(nn.Module):
         
         # 姿态角 (欧拉角)
         euler_vec = state_real[:, 6:9]
-        phi, theta, psi = euler_vec[:, 0], euler_vec[:, 1], euler_vec[:, 2]
+        theta_clamped = torch.clamp(euler_vec[:, 1], min=-1.48, max=1.48)
+        phi, theta, psi = euler_vec[:, 0], theta_clamped, euler_vec[:, 2]
         
         # 气动系数
         Cx, Cy, Cz = aero_coeffs[:, 0], aero_coeffs[:, 1], aero_coeffs[:, 2]
@@ -259,7 +280,7 @@ class AerialSystemODE(nn.Module):
 
         # 高度与转速
         z = state_real[:, 11]
-        rpm = controls_real[:, 3]
+        delta_t = controls_real[:, 3]
         
         # 2. 计算动压
         rho = self.get_air_density(z)
@@ -283,8 +304,9 @@ class AerialSystemODE(nn.Module):
         M_aero_vec = torch.stack([L_aero, M_aero, N_aero], dim=1)
         
         # 4. 计算推力
-        V_total = torch.sqrt(V_sq + 1e-9)
-        Fx_thrust = self.calculate_thrust(z, V_total, rpm)
+        # V_total = torch.sqrt(V_sq + 1e-9)
+        # Fx_thrust = self.calculate_thrust(z, V_total, rpm)
+        Fx_thrust = self.calculate_thrust(delta_t)
 
         # 构造推力向量 F_thrust_vec = [T, 0, 0] # (B, 3)
         zeros = torch.zeros_like(Fx_thrust)
@@ -408,7 +430,7 @@ class AerialSystemODE(nn.Module):
         # d(norm)/dt = d(real)/dt * scale_factor
         dx_dt_norm = self.scaler.scale_derivative_vector(dx_dt_real, self.state_keys)
 
-        return dx_dt_norm
+        return torch.clamp(dx_dt_norm, min=-10.0, max=10.0)
     
     def predict_forces_and_moments(self, state_norm, u_norm):
         """

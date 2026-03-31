@@ -98,30 +98,27 @@ class FlightDataPreprocessor:
         # 2. 经纬度转 NED
         df = self._convert_gps_to_ned(df)
         df_raw_backup = df.copy()
-
-        # 3. 航向角连续性处理
-        df = self._unwrap_psi(df)
         
-        # 4. 低通滤波
+        # 3. 低通滤波
         df = self._apply_low_pass_filter(df)
 
-        # 5. 状态变量重构
+        # 4. 状态变量重构
         df = self._reconstruct_state_variables(df, is_windless)
 
-        # 6. 数值微分与导数监督
+        # 5. 数值微分与导数监督
         df = self._prepare_derivative_labels(df, lever_arm)
 
-        # 7. 数据归一化
+        # 6. 数据归一化
         df_norm = self._normalize_data(df, save_scaler_path)
 
-        # 8. 可视化
+        # 7. 可视化
         if config['preprocess'].get('visualize', False):
            self.visualize_comparison(df_raw_backup, df, save_dir='./viz_results')
         
-        # 9. 轨迹切片
+        # 8. 轨迹切片
         dataset_dict = self._create_trajectory_slices(df, df_norm, window_size, stride)
         
-        # 10. 保存处理好的数据集
+        # 9. 保存处理好的数据集
         if save_dataset_path:
             print(f"正在保存处理后的数据集至: {save_dataset_path} ...")
             torch.save(dataset_dict, save_dataset_path)
@@ -172,16 +169,7 @@ class FlightDataPreprocessor:
         if missing_cols:
             raise ValueError(f"CSV文件缺失必要列: {missing_cols}")
         
-        # 4. 降采样：100Hz -> 50Hz
-        print("正在将 100Hz 数据降采样为 50Hz (剔除奇数时间戳)...")
-        original_len = len(df)
-        
-        # 将 time 转换为整数，并剔除奇数时间戳
-        time_cents = np.round(df['time'].values * 100).astype(int)
-        df = df[time_cents % 2 == 0].reset_index(drop=True)
-        print(f"降采样完成: {original_len} 行 -> {len(df)} 行。")
-
-        # 5. 检查数据丢包
+        # 4. 检查数据丢包
         if df.isnull().any().any():
             nan_count = df.isnull().sum().sum()
             print(f"警告: 检测到 {nan_count} 个缺失值，正在尝试线性插值修复...")
@@ -233,29 +221,12 @@ class FlightDataPreprocessor:
         
         return df
     
-    def _unwrap_psi(self, df):
-        """
-        处理 psi 角的连续性，使其在 0-2pi 之间。
-        
-        Args:
-            pd.DataFrame: 坐标转换后的数据
-        
-        Returns:
-            pd.DataFrame: 角度连续性处理后的数据
-        """
-        print("正在处理 psi 角的连续性...")
-
-        # discont=np.pi 是默认值，表示跳变阈值为 pi
-        df['psi'] = np.unwrap(df['psi'].values, discont=np.pi)
-                
-        return df
-
     def _apply_low_pass_filter(self, df):
         """
         对传感器噪声数据进行零相位低通滤波
 
         Args:
-            pd.DataFrame: 角度连续性处理后的数据
+            pd.DataFrame: 坐标转换后的数据
         
         Returns:
             pd.DataFrame: 低通滤波后的数据
@@ -367,7 +338,7 @@ class FlightDataPreprocessor:
             df['w'] = tas * sin_alpha * cos_beta
             
             print("  -> 已通过 TAS, alpha, beta 计算 u, v, w")
-            
+
         return df
     
     def _prepare_derivative_labels(self, df, lever_arm=None):
@@ -642,8 +613,8 @@ class FlightDataPreprocessor:
             plt.tight_layout()
             save_path = os.path.join(save_dir, f'{group_name}_comparison.png')
             plt.savefig(save_path, dpi=150)
-            plt.show()
-            plt.close(fig) # 关闭画布释放内存
+            # plt.show()
+            plt.close(fig)
             
         print("可视化完成。")
 
@@ -652,9 +623,9 @@ class FlightDataPreprocessor:
 if __name__ == "__main__":
     TEST_CONFIG = {
         'paths': {
-            'raw_csv': 'flight_data_preprocessing_test.csv',
-            'scaler': 'scaler_debug.pkl',
-            'dataset': 'dataset_debug.pt'
+            'raw_csv': 'Document0.csv',
+            'scaler': 'scaler0.pkl',
+            'dataset': 'dataset0.pt'
         },
         'preprocess': {
             'is_windless': True,
