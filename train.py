@@ -125,9 +125,9 @@ def main():
     CONFIG = {
         # 路径配置
         'paths': {
-            'raw_csv': 'Document0.csv',          # 原始飞行数据 (CSV格式)
-            'scaler': 'scaler0.pkl',             # 归一化参数保存路径 (Pickle)
-            'dataset': 'dataset0.pt',            # 预处理后的数据集保存路径 (PyTorch Tensor)
+            'raw_csv': 'Document41.csv',          # 原始飞行数据 (CSV格式)
+            'scaler': 'scaler41.pkl',             # 归一化参数保存路径 (Pickle)
+            'dataset': 'dataset41.pt',            # 预处理后的数据集保存路径 (PyTorch Tensor)
             'pre_wei': 'pretrained_coeffs.pth',  # 预训练模型权重路径 (PyTorch Model)
             'model_save': 'model_weights.pth'    # 模型权重保存路径 (PyTorch Model)
         },
@@ -150,14 +150,14 @@ def main():
             'batch_size': 64,          # 批大小
             'learning_rate': 1e-5,     # 初始学习率
             'min_lr':1e-7,             # 最小学习率
-            'epochs':  50,             # 总训练轮数
+            'epochs': 200,             # 总训练轮数
             'save_interval': 10,       # 每隔多少个Epoch保存一次模型
             'num_workers': 0,          # DataLoader工作线程数 (Windows建议设为0)
         },
 
         # 损失函数权重
         'loss': {
-            'w_traj': 0.1,             # 轨迹积分误差的权重 (L_traj)
+            'w_traj': 1.0,             # 轨迹积分误差的权重 (L_traj)
             'w_force': 1.0,            # 动力学/力误差的权重 (L_force)
         },
         
@@ -250,7 +250,7 @@ def main():
     # 定义预热参数
     warmup_start_epoch = 10  # 从第几轮开始引入轨迹 Loss
     warmup_epochs = 30       # 预热过渡期需要多少轮
-    start_w_traj = 1e-3      # 轨迹 Loss 的初始极小权重
+    start_w_traj = 1e-2      # 轨迹 Loss 的初始极小权重
     end_w_traj = CONFIG['loss']['w_traj'] # 最终目标权重
 
     for epoch in range(CONFIG['train']['epochs']):

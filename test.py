@@ -12,8 +12,8 @@ def main():
     # 1. 配置参数
     CONFIG = {
         'paths': {
-            'scaler': 'scaler0.pkl',             
-            'dataset': 'dataset0.pt',            
+            'scaler': 'scaler41.pkl',             
+            'dataset': 'dataset41.pt',            
             'model_save': 'model_weights.pth'   
         },
         'data': {

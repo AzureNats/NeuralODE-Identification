@@ -623,9 +623,9 @@ class FlightDataPreprocessor:
 if __name__ == "__main__":
     TEST_CONFIG = {
         'paths': {
-            'raw_csv': 'Document0.csv',
-            'scaler': 'scaler0.pkl',
-            'dataset': 'dataset0.pt'
+            'raw_csv': 'Document41.csv',
+            'scaler': 'scaler41.pkl',
+            'dataset': 'dataset41.pt'
         },
         'preprocess': {
             'is_windless': True,

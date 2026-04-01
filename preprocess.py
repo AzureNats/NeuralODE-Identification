@@ -12,9 +12,9 @@ def preprocess_flight_data(input_csv, output_csv):
         print(f"错误: 找不到文件 {input_csv}")
         return
 
-    t_start = 150.0
-    t_end = 250.0
-        
+    t_start = 50.0
+    t_end = 450.0
+    
     df = df[(df['Time(s)'] >= t_start) & (df['Time(s)'] <= t_end)]
     df = df.reset_index(drop=True)
     
@@ -102,6 +102,6 @@ def preprocess_flight_data(input_csv, output_csv):
     print(f"包含变量: {list(df_target.columns)}")
 
 if __name__ == "__main__":
-    INPUT_FILE = "Document.csv"
-    OUTPUT_FILE = "Document0.csv"
+    INPUT_FILE = "Document0401.csv"
+    OUTPUT_FILE = "Document41.csv"
     preprocess_flight_data(INPUT_FILE, OUTPUT_FILE)
