@@ -14,7 +14,6 @@ class CoefficientNet(nn.Module):
         """
         super().__init__()
         
-        # 定义网络层
         self.net = nn.Sequential(
             nn.Linear(10, 64),
             nn.Tanh(),
@@ -28,7 +27,6 @@ class CoefficientNet(nn.Module):
             nn.Linear(64, 6)
         )
         
-        # 权重初始化
         self._init_weights()
 
     def _init_weights(self):
@@ -56,6 +54,41 @@ class CoefficientNet(nn.Module):
                           包含 [Cx, Cy, Cz, Cl, Cm, Cn]
         """
         return self.net(x)
+    
+    def compute_jacobian_regularization(self, state_norm, u_norm):
+        """
+        使用 Hutchinson 迹估计器计算 Jacobian 矩阵的 F-范数。
+        仅对输入的状态量 (u, v, w, p, q, r) 求导。
+
+        Args:
+            state_norm (Tensor): 归一化的状态量 (Batch_Size, 12)
+            u_norm (Tensor): 归一化的控制量 (Batch_Size, 4)
+        
+        Returns:
+            regularization (Tensor): 正则化项 (标量)
+        """
+        # 1. 提取前 6 维状态
+        state_6 = state_norm[..., :6].detach().requires_grad_(True)
+        u_detached = u_norm.detach()
+        
+        # 2. 拼接输入并前向传播
+        nn_input = torch.cat([state_6, u_detached], dim=-1)
+        coeffs = self.forward(nn_input)
+        
+        # 3. 生成随机噪声并计算内积
+        v = torch.randn_like(coeffs)
+        vTy = torch.sum(v * coeffs)
+        
+        # 4. 计算 VJP
+        vjp = torch.autograd.grad(
+            outputs=vTy,
+            inputs=state_6,
+            create_graph=True,
+            retain_graph=True,
+            only_inputs=True
+        )[0]
+        
+        return torch.mean(vjp ** 2)
 
 
 class AerialSystemODE(nn.Module):

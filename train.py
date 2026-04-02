@@ -112,8 +112,7 @@ class HybridLoss(nn.Module):
         loss_total = self.w_traj * loss_traj + self.w_force * loss_force
         log_dict = {
             'loss_traj': loss_traj.item(),
-            'loss_force': loss_force.item(),
-            'loss_total': loss_total.item()
+            'loss_force': loss_force.item()
         }
         
         return loss_total, log_dict
@@ -150,7 +149,7 @@ def main():
             'batch_size': 64,          # 批大小
             'learning_rate': 1e-5,     # 初始学习率
             'min_lr':1e-7,             # 最小学习率
-            'epochs': 200,             # 总训练轮数
+            'epochs': 150,             # 总训练轮数
             'save_interval': 10,       # 每隔多少个Epoch保存一次模型
             'num_workers': 0,          # DataLoader工作线程数 (Windows建议设为0)
         },
@@ -159,6 +158,7 @@ def main():
         'loss': {
             'w_traj': 1.0,             # 轨迹积分误差的权重 (L_traj)
             'w_force': 1.0,            # 动力学/力误差的权重 (L_force)
+            'w_jac': 100.0,            # 雅可比正则化权重 (L_jac)
         },
         
         # 物理参数
@@ -213,6 +213,7 @@ def main():
     history_total = []
     history_traj = []
     history_force = []
+    history_jac = []
     
     print(f"数据加载完成。样本数: {len(train_dataset)}")
 
@@ -259,6 +260,7 @@ def main():
         epoch_loss_total = 0.0
         epoch_loss_traj = 0.0
         epoch_loss_force = 0.0
+        epoch_loss_jac = 0.0
 
         # 动态调整 Loss 权重 (指数预热策略)
         if epoch < warmup_start_epoch:
@@ -300,6 +302,9 @@ def main():
             
             # E. 计算 Loss
             loss, log_dict = loss_fn(pred_traj_norm, gt_states_norm, pred_force_real, gt_force)
+            loss_jac = model.net.compute_jacobian_regularization(gt_states_norm, controls)
+            loss += loss_jac * CONFIG['loss']['w_jac']
+            log_dict['loss_jac'] = loss_jac.item()
             
             # F. 反向传播
             loss.backward()
@@ -309,18 +314,23 @@ def main():
             epoch_loss_total += loss.item()
             epoch_loss_traj += log_dict['loss_traj']
             epoch_loss_force += log_dict['loss_force']
+            epoch_loss_jac += log_dict['loss_jac']
             
             if batch_idx % 10 == 0:
                 print(f"Epoch {epoch} | Batch {batch_idx} | Loss: {loss.item():.6f} "
-                      f"(Traj: {log_dict['loss_traj']:.6f}, Force: {log_dict['loss_force']:.6f})")
+                      f"(Traj: {log_dict['loss_traj']:.6f}, "
+                      f"Force: {log_dict['loss_force']:.6f}, "
+                      f"Jac: {log_dict['loss_jac']:.6f})")
 
         avg_total = epoch_loss_total / len(train_loader)
         avg_traj = epoch_loss_traj / len(train_loader)
         avg_force = epoch_loss_force / len(train_loader)
+        avg_jac = epoch_loss_jac / len(train_loader)
 
         history_total.append(avg_total)
         history_traj.append(avg_traj)
         history_force.append(avg_force)
+        history_jac.append(avg_jac)
 
         print(f"Epoch {epoch} 完成 | 平均 Loss: {avg_total:.6f}")
         
@@ -336,6 +346,7 @@ def main():
     plt.plot(epochs_range, history_total, label='Total Loss', color='black', linewidth=2)
     plt.plot(epochs_range, history_traj, label='Trajectory Loss (Raw MSE)', color='blue', linestyle='--')
     plt.plot(epochs_range, history_force, label='Force Loss (Var-Normalized)', color='red', linestyle='-.')
+    plt.plot(epochs_range, history_jac, label='Jacobian Loss (Frobenius Norm)', color='green', linestyle=':')
     
     plt.title('Neural ODE Training Convergence')
     plt.xlabel('Epochs')
