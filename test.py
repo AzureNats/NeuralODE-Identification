@@ -1,6 +1,7 @@
 import torch
 import matplotlib.pyplot as plt
 import os
+import random
 from NeuralODEFunc import CoefficientNet, AerialSystemODE
 from flight_scaler import FlightDataScaler
 from train import FlightDataset 
@@ -36,17 +37,15 @@ def main():
     }
 
     # 2. 加载预处理数据、归一化器和 Dataset
-    print("正在加载数据和 Scaler...")
     if not os.path.exists(CONFIG['paths']['model_save']):
         raise FileNotFoundError("找不到模型权重文件，请确认训练是否成功保存了模型！")
 
     scaler = FlightDataScaler().load(CONFIG['paths']['scaler'])
     data_dict = torch.load(CONFIG['paths']['dataset'], weights_only=False)
     test_dataset = FlightDataset(data_dict)
-    print(f"数据集加载成功，共有 {len(test_dataset)} 个序列切片。")
+    print(f"数据集已加载，共有 {len(test_dataset)} 个序列切片。")
 
     # 3. 实例化模型并加载权重
-    print("正在加载神经网络权重...")
     net = CoefficientNet().to(device)
     model = AerialSystemODE(
         neural_net=net, 
@@ -58,10 +57,11 @@ def main():
     # 加载权重并设置为评估模式
     model.load_state_dict(torch.load(CONFIG['paths']['model_save'], map_location=device))
     model.eval()
+    print(f"模型权重已加载。")
 
     # 4. 抽取测试样本并进行预测
-    # 抽取数据集最中间的一个样本，避开初始静止状态
-    sample_idx = len(test_dataset) // 2 
+    sample_idx = random.randint(10, len(test_dataset) - 10)
+    print(f"本次随机抽取的测试切片 Index: {sample_idx} / {len(test_dataset)}")
     sample = test_dataset[sample_idx]
     
     x0 = sample['x0'].unsqueeze(0).to(device)                         
@@ -74,7 +74,6 @@ def main():
     T = CONFIG['data']['window_size']
     t_span = torch.linspace(0, (T - 1) * CONFIG['data']['dt'], T).to(device)
 
-    print("开始计算气动力和积分轨迹...")
     with torch.no_grad(): 
         model.set_control_context(t_span, controls)
         
@@ -87,7 +86,6 @@ def main():
         pred_force_real = force_dict['pred_force'] # (1, T, 6)
 
     # 5. 反归一化为物理单位
-    print("正在进行反归一化...")
     state_keys = model.state_keys
     
     # 展平以便 Scaler 处理: (1, T, 12) -> (T, 12)
@@ -103,7 +101,6 @@ def main():
     pred_force_np = pred_force_real.squeeze(0).cpu().numpy()
 
     # 6. 绘制加速度与角加速度的对比图
-    print("正在生成加速度与角加速度预测对比图...")
     fig, axes = plt.subplots(2, 3, figsize=(15, 8))
     fig.suptitle('Aerodynamic Forces & Moments Prediction (Core F=ma Check)', fontsize=16)
 
@@ -129,10 +126,9 @@ def main():
     
     save_path = 'force_prediction_test.png'
     plt.savefig(save_path, dpi=200)
-    print(f"绘图完成！图片已保存为: {save_path}")
+    print(f"加速度与角加速度预测对比图已保存为: {save_path}")
 
     # 7. 绘制速度与角速度对比图 (u, v, w, p, q, r)
-    print("正在生成 速度 & 角速度 积分轨迹对比图...")
     fig2, axes2 = plt.subplots(2, 3, figsize=(15, 8))
     fig2.suptitle('Velocities & Angular Velocities Trajectory (ODE Integration)', fontsize=16)
 
@@ -160,7 +156,6 @@ def main():
     print(f"速度与角速度轨迹图已保存为: {save_path2}")
 
     # 8. 绘制姿态角与位置轨迹对比图 (phi, theta, psi, x, y, z)
-    print("正在生成 姿态角 & 位置 积分轨迹对比图...")
     fig3, axes3 = plt.subplots(2, 3, figsize=(15, 8))
     fig3.suptitle('Attitude & Position Trajectory (ODE Integration)', fontsize=16)
 
