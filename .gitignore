@@ -1,8 +1,8 @@
 __pycache__/
 .vscode/
-0401/
 beta/
 engine/
+results/
 validation_plots/
 viz_results/
 *.csv
