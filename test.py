@@ -126,7 +126,7 @@ def main():
     
     save_path = 'force_prediction_test.png'
     plt.savefig(save_path, dpi=200)
-    print(f"加速度与角加速度预测对比图已保存为: {save_path}")
+    print(f"加速度与角加速度预测图已保存为: {save_path}")
 
     # 7. 绘制速度与角速度对比图 (u, v, w, p, q, r)
     fig2, axes2 = plt.subplots(2, 3, figsize=(15, 8))

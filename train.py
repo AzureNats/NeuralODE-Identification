@@ -148,8 +148,8 @@ def main():
         'train': {
             'batch_size': 64,          # 批大小
             'learning_rate': 1e-5,     # 初始学习率
-            'min_lr':1e-7,             # 最小学习率
-            'epochs': 150,             # 总训练轮数
+            'min_lr': 1e-6,            # 最小学习率
+            'epochs': 100,             # 总训练轮数
             'save_interval': 10,       # 每隔多少个Epoch保存一次模型
             'num_workers': 0,          # DataLoader工作线程数 (Windows建议设为0)
         },
@@ -158,7 +158,7 @@ def main():
         'loss': {
             'w_traj': 1.0,             # 轨迹积分误差的权重 (L_traj)
             'w_force': 1.0,            # 动力学/力误差的权重 (L_force)
-            'w_jac': 100.0,            # 雅可比正则化权重 (L_jac)
+            'w_jac': 150.0,            # 雅可比正则化权重 (L_jac)
         },
         
         # 物理参数
