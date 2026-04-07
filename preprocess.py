@@ -33,8 +33,8 @@ def preprocess_flight_data(input_csv, output_csv):
     # df_target['w'] = -df['Vyt']      # 上向(原Y)取反变下向
 
     # 3. 机体系角速度 (滚转、俯仰、偏航)
-    df_target['p'] = df['Wx']          # 滚转率不变
-    df_target['q'] = df['Wz']          # 原Z轴(右)对应的就是俯仰率
+    df_target['p'] = df['Wx']          # 滚转角速度不变
+    df_target['q'] = df['Wz']          # 原Z轴(右)对应的就是俯仰角速度
     df_target['r'] = df['Wy']          # 原Y轴(上)的偏航为左偏，取反变右偏
 
     # 4. 欧拉角 (Roll, Pitch, Yaw)

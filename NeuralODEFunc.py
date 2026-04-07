@@ -127,7 +127,7 @@ class AerialSystemODE(nn.Module):
         self.S = torch.tensor(known_props['S']).float().to(device)
         self.b = torch.tensor(known_props['b']).float().to(device)
         self.c = torch.tensor(known_props['c']).float().to(device)
-        self.base_alt = torch.tensor(known_props.get('base_altitude', 0.0)).float().to(device)
+        self.h0 = torch.tensor(known_props.get('h0')).float().to(device)
         self.I = torch.tensor(known_props['I']).float().to(device)
         self.I_inv = torch.inverse(self.I)
         self.T_offset = torch.tensor(known_props['T_offset']).float().to(device)
@@ -163,12 +163,12 @@ class AerialSystemODE(nn.Module):
         
         Args:
             z_ned (Tensor): NED 坐标系下的 z 轴位置 (向下为正, m)
-                            Alt = Base_Alt - z_ned
+                            Alt = h0 - z_ned
         Returns:
             rho (Tensor): 当前密度 (kg/m^3)
         """
         # 1. 计算绝对海拔高度 (m)
-        alt = self.base_alt - z_ned
+        alt = self.h0 - z_ned
         
         # 2. 计算温度
         alt = torch.clamp(alt, min=-1000.0, max=11000.0)

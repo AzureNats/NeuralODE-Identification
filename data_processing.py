@@ -91,6 +91,7 @@ class FlightDataPreprocessor:
         window_size = config['data']['window_size']
         stride = config['data']['stride']
         self.dt = config['data']['dt']
+        self.h0 = config['props']['h0']
 
         # 1. 加载与清洗
         df = self._load_and_check(file_path, is_windless)
@@ -203,7 +204,6 @@ class FlightDataPreprocessor:
         # 选取第一个点作为参考点 (Home)
         lat0 = np.deg2rad(df['lat'].iloc[0])
         lon0 = np.deg2rad(df['lon'].iloc[0])
-        h0 = df['h'].iloc[0]
         R = 6371000.0   # 地球半径 (m)
         
         # 将当前经纬度转为弧度
@@ -217,7 +217,7 @@ class FlightDataPreprocessor:
         df['y'] = R * np.cos(lat0) * (lon_rad - lon0)
         
         # 计算地向距离 z (Down)
-        df['z'] = -(df['h'].values - h0)
+        df['z'] = -(df['h'].values - self.h0)
         
         return df
     
@@ -636,6 +636,9 @@ if __name__ == "__main__":
             'window_size': 100,
             'stride': 20,
             'dt': 0.02,
+        },
+        'props': {
+            'h0': 1100.5,
         }
     }
 
