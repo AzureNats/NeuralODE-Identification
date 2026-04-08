@@ -25,7 +25,8 @@ class StaticAeroDataset(Dataset):
         virtual_props.update({
             'm': 420.0,
             'I': [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-            'T_offset': [0, 0, 0]
+            'T_offset': [0, 0, 0],
+            'h0': 1100.5
         })
         
         # 实例化 ODE (仅用于调用calculate_thrust)
@@ -49,13 +50,13 @@ class StaticAeroDataset(Dataset):
         b = props['b']
         c = props['c']
         
-        # 2. 数据平滑滤波 (气动力、力矩、气流角、角速度、空速)
-        cols_to_filter = ['FX', 'FY', 'FZ', 'L', 'M', 'N', 
-                          'TAS', 'alpha', 'beta', 'p', 'q', 'r']
+        # # 2. 数据平滑滤波 (气动力、力矩、气流角、角速度、空速)
+        # cols_to_filter = ['FX', 'FY', 'FZ', 'L', 'M', 'N', 
+        #                   'TAS', 'alpha', 'beta', 'p', 'q', 'r']
                           
-        for col in cols_to_filter:
-            window = min(11, len(df) - (len(df) % 2 == 0)) 
-            df[col] = savgol_filter(df[col].values, window_length=window, polyorder=2)
+        # for col in cols_to_filter:
+        #     window = min(11, len(df) - (len(df) % 2 == 0)) 
+        #     df[col] = savgol_filter(df[col].values, window_length=window, polyorder=2)
 
         # 3.风轴气动力转换至体轴
         fx_wind = df['FX'].values

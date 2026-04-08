@@ -28,7 +28,7 @@ def main():
             'S': 18.825,                
             'b': 9.804,                 
             'c': 1.932,                 
-            'base_altitude': 1215.465,       
+            'h0': 1100.5,       
             'T_offset': [0, 0, -0.75],  
             'I': [                      
                 [ 539.246,        0, -105.374],
@@ -62,6 +62,7 @@ def main():
 
     # 4. 抽取测试样本并进行预测
     sample_idx = random.randint(10, len(test_dataset) - 10)
+    sample_idx = 714
     print(f"本次随机抽取的测试切片 Index: {sample_idx} / {len(test_dataset)}")
     sample = test_dataset[sample_idx]
     

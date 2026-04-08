@@ -101,7 +101,7 @@ class FlightDataPreprocessor:
         df_raw_backup = df.copy()
         
         # 3. 低通滤波
-        df = self._apply_low_pass_filter(df)
+        # df = self._apply_low_pass_filter(df)
 
         # 4. 状态变量重构
         df = self._reconstruct_state_variables(df, is_windless)
