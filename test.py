@@ -62,7 +62,7 @@ def main():
 
     # 4. 抽取测试样本并进行预测
     sample_idx = random.randint(10, len(test_dataset) - 10)
-    sample_idx = 714
+    # sample_idx = 172
     print(f"本次随机抽取的测试切片 Index: {sample_idx} / {len(test_dataset)}")
     sample = test_dataset[sample_idx]
     
@@ -127,7 +127,7 @@ def main():
 
     # 8. 绘制速度与角速度对比图 (u, v, w, p, q, r)
     fig2, axes2 = plt.subplots(2, 3, figsize=(15, 8))
-    fig2.suptitle(f'Velocities & Angular Velocities Trajectory (#{sample_idx})', fontsize=16)
+    fig2.suptitle(f'Velocities & Angular Velocities Trajectory Prediction (#{sample_idx})', fontsize=16)
 
     vel_keys = ['u (m/s)', 'v (m/s)', 'w (m/s)', 
                 'p (rad/s)', 'q (rad/s)', 'r (rad/s)']
@@ -154,7 +154,7 @@ def main():
 
     # 9. 绘制姿态角与位置轨迹对比图 (phi, theta, psi, x, y, z)
     fig3, axes3 = plt.subplots(2, 3, figsize=(15, 8))
-    fig3.suptitle(f'Attitude & Position Trajectory (#{sample_idx})', fontsize=16)
+    fig3.suptitle(f'Attitude & Position Trajectory Prediction (#{sample_idx})', fontsize=16)
 
     pos_keys = ['phi (rad)', 'theta (rad)', 'psi (rad)', 
                 'x (m)', 'y (m)', 'z (m)']

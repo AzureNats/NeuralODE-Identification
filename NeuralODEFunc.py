@@ -57,38 +57,65 @@ class CoefficientNet(nn.Module):
     
     def compute_jacobian_regularization(self, state_norm, u_norm):
         """
-        使用 Hutchinson 迹估计器计算 Jacobian 矩阵的 F-范数。
-        仅对输入的状态量 (u, v, w, p, q, r) 求导。
+        掩码雅可比正则化: ||J ⊙ M||_F²
+
+        基于经典气动力学的纵横向解耦假设，仅惩罚交叉耦合导数:
+        - 纵向系数 [Cx, Cz, Cm] 对纵向状态 [u, w, q] 的导数: 保留
+        - 横向系数 [Cy, Cl, Cn] 对横向状态 [v, p, r] 的导数: 保留
+        - 交叉耦合导数: 惩罚 (抑制非物理高频振荡)
+
+        使用 2 次 Hutchinson 探针高效估计，计算量与原方法相当。
 
         Args:
-            state_norm (Tensor): 归一化的状态量 (Batch_Size, 12)
-            u_norm (Tensor): 归一化的控制量 (Batch_Size, 4)
-        
+            state_norm (Tensor): 归一化的状态量 (..., 12)
+            u_norm (Tensor): 归一化的控制量 (..., 4)
+
         Returns:
             regularization (Tensor): 正则化项 (标量)
         """
-        # 1. 提取前 6 维状态
+        # 1. 准备输入
         state_6 = state_norm[..., :6].detach().requires_grad_(True)
         u_detached = u_norm.detach()
-        
-        # 2. 拼接输入并前向传播
         nn_input = torch.cat([state_6, u_detached], dim=-1)
-        coeffs = self.forward(nn_input)
-        
-        # 3. 生成随机噪声并计算内积
-        v = torch.randn_like(coeffs)
-        vTy = torch.sum(v * coeffs)
-        
-        # 4. 计算 VJP
-        vjp = torch.autograd.grad(
-            outputs=vTy,
+        coeffs = self.forward(nn_input)  # (..., 6): [Cx, Cy, Cz, Cl, Cm, Cn]
+
+        # 2. 索引定义
+        # 输出: Cx(0), Cz(2), Cm(4) = 纵向;  Cy(1), Cl(3), Cn(5) = 横向
+        # 输入: u(0), w(2), q(4) = 纵向;     v(1), p(3), r(5) = 横向
+        long_out = [0, 2, 4]
+        lat_out  = [1, 3, 5]
+        long_in  = [0, 2, 4]
+        lat_in   = [1, 3, 5]
+
+        # 3. 探针 A: 惩罚纵向系数对横向状态的灵敏度
+        # Cx, Cz, Cm 不应强依赖于 v, p, r
+        v_a = torch.zeros_like(coeffs)
+        v_a[..., long_out] = torch.randn(
+            *coeffs.shape[:-1], 3, device=coeffs.device)
+        vjp_a = torch.autograd.grad(
+            outputs=torch.sum(v_a * coeffs),
             inputs=state_6,
             create_graph=True,
             retain_graph=True,
             only_inputs=True
         )[0]
-        
-        return torch.mean(vjp ** 2)
+        reg_a = torch.mean(vjp_a[..., lat_in] ** 2)
+
+        # 4. 探针 B: 惩罚横向系数对纵向状态的灵敏度
+        # Cy, Cl, Cn 不应强依赖于 u, w, q
+        v_b = torch.zeros_like(coeffs)
+        v_b[..., lat_out] = torch.randn(
+            *coeffs.shape[:-1], 3, device=coeffs.device)
+        vjp_b = torch.autograd.grad(
+            outputs=torch.sum(v_b * coeffs),
+            inputs=state_6,
+            create_graph=True,
+            retain_graph=True,
+            only_inputs=True
+        )[0]
+        reg_b = torch.mean(vjp_b[..., long_in] ** 2)
+
+        return reg_a + reg_b
 
 
 class AerialSystemODE(nn.Module):
