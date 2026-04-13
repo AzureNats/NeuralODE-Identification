@@ -2,14 +2,72 @@ import torch
 import matplotlib.pyplot as plt
 import os
 import random
+import numpy as np
 from datetime import datetime
 from torchdiffeq import odeint
 from NeuralODEFunc import CoefficientNet, AerialSystemODE
 from flight_scaler import FlightDataScaler
-from train import FlightDataset 
+from train import FlightDataset
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_default_dtype(torch.float32)
+
+def validate_sample_variation(sample, scaler, state_keys):
+    """
+    验证样本是否满足变化要求：每组物理量中至少2/3有明显变化
+    在真实物理空间进行判断，每组物理量单独设置阈值
+
+    Args:
+        sample: 数据集样本字典
+        scaler: FlightDataScaler 实例
+        state_keys: 状态量键列表
+
+    Returns:
+        bool: 是否满足要求
+    """
+    gt_states_norm = sample['gt_states_norm']  # (T, 12)
+    gt_force_real = sample['gt_force']  # (T, 6) 已经是真实物理空间
+
+    # 反归一化状态量到真实物理空间
+    gt_states_real = scaler.inverse_transform_vector(gt_states_norm, state_keys).numpy()
+
+    # 定义物理量分组 (索引) 及其阈值
+    groups = {
+        'linear_vel': {
+            'indices': [0, 1, 2],      # u, v, w (m/s)
+            'threshold': 0.5,          # 线速度变化阈值
+            'data': gt_states_real
+        },
+        'angular_vel': {
+            'indices': [3, 4, 5],      # p, q, r (rad/s)
+            'threshold': 0.1,          # 角速度变化阈值
+            'data': gt_states_real
+        },
+        'attitude': {
+            'indices': [6, 7, 8],      # phi, theta, psi (rad)
+            'threshold': 0.05,         # 姿态角变化阈值
+            'data': gt_states_real
+        },
+        'linear_accel': {
+            'indices': [0, 1, 2],      # ax, ay, az (m/s^2)
+            'threshold': 1.0,          # 线加速度变化阈值
+            'data': gt_force_real.numpy()
+        }
+    }
+
+    for group_name, group_info in groups.items():
+        valid_count = 0
+        for idx in group_info['indices']:
+            data = group_info['data'][:, idx]
+            variation = np.max(data) - np.min(data)  # 极差
+            if variation > group_info['threshold']:
+                valid_count += 1
+
+        # 至少2/3有明显变化
+        if valid_count < 2:
+            return False
+
+    return True
 
 def main():
     # 1. 配置参数
@@ -60,10 +118,22 @@ def main():
     model.eval()
     print(f"模型权重已加载。")
 
-    # 4. 抽取测试样本并进行预测
-    sample_idx = random.randint(10, len(test_dataset) - 10)
-    # sample_idx = 172
-    print(f"本次随机抽取的测试切片 Index: {sample_idx} / {len(test_dataset)}")
+    # 4. 智能抽取测试样本 (要求每组物理量中至少2/3有明显变化)
+    state_keys = model.state_keys
+    max_attempts = 500
+    sample_idx = None
+    for attempt in range(max_attempts):
+        candidate = random.randint(10, len(test_dataset) - 10)
+        if validate_sample_variation(test_dataset[candidate], scaler, state_keys):
+            sample_idx = candidate
+            break
+
+    if sample_idx is None:
+        sample_idx = random.randint(10, len(test_dataset) - 10)
+        print(f"警告: 尝试 {max_attempts} 次后未找到满足变化要求的样本，使用随机样本。")
+
+    # sample_idx = 886  # 手动指定测试样本
+    print(f"本次抽取的测试切片 Index: {sample_idx} / {len(test_dataset)}")
     sample = test_dataset[sample_idx]
     
     x0 = sample['x0'].unsqueeze(0).to(device)                         
@@ -81,8 +151,6 @@ def main():
         pred_force_real = force_dict['pred_force'] # (1, T, 6)
 
     # 5. 反归一化为物理单位
-    state_keys = model.state_keys
-    
     pred_flat = pred_traj_norm.squeeze(0)
     gt_flat = gt_states_norm.squeeze(0)
     
@@ -102,25 +170,45 @@ def main():
     fig, axes = plt.subplots(2, 3, figsize=(15, 8))
     fig.suptitle(f'Aerodynamic Forces & Moments Prediction (#{sample_idx})', fontsize=16)
 
-    force_keys = ['ax (m/s^2)', 'ay (m/s^2)', 'az (m/s^2)', 
+    force_keys = ['ax (m/s^2)', 'ay (m/s^2)', 'az (m/s^2)',
                   'dot_p (rad/s^2)', 'dot_q (rad/s^2)', 'dot_r (rad/s^2)']
 
     for i, key in enumerate(force_keys):
         row = i // 3
         col = i % 3
         ax = axes[row, col]
-        
+
         ax.plot(time_axis, gt_force_np[:, i], label='Ground Truth', color='black', linewidth=2)
         ax.plot(time_axis, pred_force_np[:, i], label='Prediction', color='red', linestyle='--', linewidth=2)
-        
+
         ax.set_title(f'[{key}]', fontweight='bold')
         ax.set_xlabel('Time (s)')
         ax.grid(True, linestyle=':', alpha=0.6)
-        if i == 0: 
+        if i == 0:
             ax.legend()
 
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95]) 
-    
+    # 同行共享比例尺 (相同的 y 轴范围，但中心可以不同)
+    for row in range(2):
+        # 计算该行每个子图的数据范围
+        ranges = []
+        centers = []
+        for col in range(3):
+            y_min_auto, y_max_auto = axes[row, col].get_ylim()
+            data_range = y_max_auto - y_min_auto
+            data_center = (y_max_auto + y_min_auto) / 2
+            ranges.append(data_range)
+            centers.append(data_center)
+
+        # 使用最大范围作为统一比例尺
+        max_range = max(ranges)
+        max_range *= 1.1  # 10% padding
+
+        # 为每个子图设置相同范围但不同中心
+        for col in range(3):
+            axes[row, col].set_ylim(centers[col] - max_range/2, centers[col] + max_range/2)
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+
     save_path = os.path.join(result_dir, 'force_prediction.png')
     plt.savefig(save_path, dpi=200)
     print(f"加速度与角加速度预测图已保存为: {save_path}")
@@ -129,25 +217,42 @@ def main():
     fig2, axes2 = plt.subplots(2, 3, figsize=(15, 8))
     fig2.suptitle(f'Velocities & Angular Velocities Trajectory Prediction (#{sample_idx})', fontsize=16)
 
-    vel_keys = ['u (m/s)', 'v (m/s)', 'w (m/s)', 
+    vel_keys = ['u (m/s)', 'v (m/s)', 'w (m/s)',
                 'p (rad/s)', 'q (rad/s)', 'r (rad/s)']
 
     for i, key in enumerate(vel_keys):
         row = i // 3
         col = i % 3
         ax = axes2[row, col]
-        
+
         # 前 6 个状态对应索引 0~5
         ax.plot(time_axis, gt_real[:, i], label='Ground Truth', color='black', linewidth=2)
         ax.plot(time_axis, pred_real[:, i], label='Prediction (Integration)', color='red', linestyle='--', linewidth=2)
-        
+
         ax.set_title(f'[{key}]', fontweight='bold')
         ax.set_xlabel('Time (s)')
         ax.grid(True, linestyle=':', alpha=0.6)
-        if i == 0: 
+        if i == 0:
             ax.legend()
 
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95]) 
+    # 同行共享比例尺
+    for row in range(2):
+        ranges = []
+        centers = []
+        for col in range(3):
+            y_min_auto, y_max_auto = axes2[row, col].get_ylim()
+            data_range = y_max_auto - y_min_auto
+            data_center = (y_max_auto + y_min_auto) / 2
+            ranges.append(data_range)
+            centers.append(data_center)
+
+        max_range = max(ranges)
+        max_range *= 1.1
+
+        for col in range(3):
+            axes2[row, col].set_ylim(centers[col] - max_range/2, centers[col] + max_range/2)
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     save_path2 = os.path.join(result_dir, 'velocity_prediction.png')
     plt.savefig(save_path2, dpi=200)
     print(f"速度与角速度轨迹图已保存为: {save_path2}")
@@ -156,26 +261,43 @@ def main():
     fig3, axes3 = plt.subplots(2, 3, figsize=(15, 8))
     fig3.suptitle(f'Attitude & Position Trajectory Prediction (#{sample_idx})', fontsize=16)
 
-    pos_keys = ['phi (rad)', 'theta (rad)', 'psi (rad)', 
+    pos_keys = ['phi (rad)', 'theta (rad)', 'psi (rad)',
                 'x (m)', 'y (m)', 'z (m)']
 
     for i, key in enumerate(pos_keys):
         row = i // 3
         col = i % 3
         ax = axes3[row, col]
-        
+
         # 后 6 个状态对应索引 6~11
         state_idx = i + 6
         ax.plot(time_axis, gt_real[:, state_idx], label='Ground Truth', color='black', linewidth=2)
         ax.plot(time_axis, pred_real[:, state_idx], label='Prediction (Integration)', color='red', linestyle='--', linewidth=2)
-        
+
         ax.set_title(f'[{key}]', fontweight='bold')
         ax.set_xlabel('Time (s)')
         ax.grid(True, linestyle=':', alpha=0.6)
-        if i == 0: 
+        if i == 0:
             ax.legend()
 
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95]) 
+    # 同行共享比例尺 (相同的 y 轴范围，但中心可以不同)
+    for row in range(2):
+        ranges = []
+        centers = []
+        for col in range(3):
+            y_min_auto, y_max_auto = axes3[row, col].get_ylim()
+            data_range = y_max_auto - y_min_auto
+            data_center = (y_max_auto + y_min_auto) / 2
+            ranges.append(data_range)
+            centers.append(data_center)
+
+        max_range = max(ranges)
+        max_range *= 1.1
+
+        for col in range(3):
+            axes3[row, col].set_ylim(centers[col] - max_range/2, centers[col] + max_range/2)
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     save_path3 = os.path.join(result_dir, 'trajectory_prediction.png')
     plt.savefig(save_path3, dpi=200)
     print(f"姿态与位置轨迹图已保存为: {save_path3}")

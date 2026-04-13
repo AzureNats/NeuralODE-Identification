@@ -7,6 +7,7 @@ from torchdiffeq import odeint_adjoint as odeint
 from NeuralODEFunc import CoefficientNet, AerialSystemODE
 from flight_scaler import FlightDataScaler
 from data_processing import FlightDataPreprocessor
+from relobralo import ReLoBRaLo
 import os
 import matplotlib.pyplot as plt
 
@@ -62,60 +63,36 @@ class FlightDataset(Dataset):
 
 # 二. 混合损失函数
 class HybridLoss(nn.Module):
-    def __init__(self, weight_traj, weight_force):
+    def __init__(self):
         """
-        定义混合损失函数: L_total = w1 * L_traj + w2 * L_force
-        
-        Args:
-            weight_traj (float): 轨迹误差的权重
-            weight_force (float): 动力学/力误差的权重
+        混合损失函数，返回未加权的各项 Loss。
+        轨迹损失拆分为速度损失和运动学损失，加权由外部 ReLoBRaLo 负责。
         """
         super().__init__()
-        self.w_traj = weight_traj
-        self.w_force = weight_force
         self.mse = nn.MSELoss()
 
     def forward(self, pred_traj_norm, gt_traj_norm, pred_force_real, gt_force_real):
         """
-        计算总 Loss。
-        
-        关键逻辑:
-        - 轨迹 Loss: 归一化空间计算。
-        - 力 Loss: 物理空间计算，并使用动态方差归一化。
-        
-        Args:
-            pred_traj_norm (Tensor): ODE 积分出的归一化轨迹 (B, T, 12)
-            gt_traj_norm (Tensor): 真实的归一化轨迹 (B, T, 12)
-            pred_force_real (Tensor): Teacher Forcing 预测的物理力 (B, T, 6)
-            gt_force_real (Tensor): IMU 测量的物理力/导数 (B, T, 6)
-            scaler (FlightDataScaler): 用于反归一化的 scaler 实例
-            
-        Returns:
-            loss_total (Tensor): 总 Loss (标量)
-            log_dict (dict): 分项 Loss (用于日志打印)
-        """
-        # 1. 计算轨迹损失 (L_trajectory)
-        loss_traj = self.mse(pred_traj_norm, gt_traj_norm)
+        计算各项未加权 Loss。
 
-        # 2. 计算动力学损失 (L_force)
-        # 计算 6 个物理维度各自的 MSE 误差 -> 形状: (6,)
-        # dim=(0, 1) 表示在 Batch(B) 和 Time(T) 维度上求均值
+        Returns:
+            loss_vel (Tensor): 速度+角速度 MSE [u,v,w,p,q,r] (归一化空间)
+            loss_kin (Tensor): 姿态+位置 MSE [phi,theta,psi,x,y,z] (归一化空间)
+            loss_force (Tensor): 力误差 (方差归一化)
+        """
+        # 1. 速度损失 (前6维: u, v, w, p, q, r)
+        loss_vel = self.mse(pred_traj_norm[..., :6], gt_traj_norm[..., :6])
+
+        # 2. 运动学损失 (后6维: phi, theta, psi, x, y, z)
+        loss_kin = self.mse(pred_traj_norm[..., 6:], gt_traj_norm[..., 6:])
+
+        # 3. 动力学损失 (方差归一化)
         mse_per_dim = torch.mean((pred_force_real - gt_force_real)**2, dim=(0, 1))
-        
-        # 计算 6 个物理维度各自的真实方差 -> 形状: (6,)
         gt_var = torch.var(gt_force_real, dim=(0, 1), unbiased=False)
         gt_var = torch.clamp(gt_var, min=1e-3)
-        
         loss_force = torch.mean(mse_per_dim / gt_var)
 
-        # 3. 加权求和
-        loss_total = self.w_traj * loss_traj + self.w_force * loss_force
-        log_dict = {
-            'loss_traj': loss_traj.item(),
-            'loss_force': loss_force.item()
-        }
-        
-        return loss_total, log_dict
+        return loss_vel, loss_kin, loss_force
     
     
 # 三. 主函数
@@ -154,11 +131,16 @@ def main():
             'num_workers': 0,          # DataLoader工作线程数 (Windows建议设为0)
         },
 
-        # 损失函数权重
+        # ReLoBRaLo 动态损失平衡参数 (仅管理数据/物理损失)
         'loss': {
-            'w_traj': 1.0,             # 轨迹积分误差的权重 (L_traj)
-            'w_force': 5.0,            # 动力学/力误差的权重 (L_force)
-            'w_jac': 15.0,              # 雅可比正则化权重 (L_jac)
+            'alpha': 0.95,             # 长期 vs 短期平衡系数 (越小越重视短期变化)
+            'beta': 0.5,               # EMA 平滑系数 (越小权重响应越快)
+            'tau': 0.5,                # Softmax 温度 (越小分布越尖锐, 区分度越大)
+            'base_weights': [1.0, 1.0, 1.0],  # [vel, kin, force] 基础缩放因子
+            'enable_jacobian': True,   # Jacobian 正则化开关
+            'enable_hessian': True,    # Hessian 正则化开关
+            'w_jac': 30.0,             # 雅可比正则化固定权重
+            'w_hes': 5.0,              # 海森正则化固定权重
         },
         
         # 物理参数
@@ -211,9 +193,14 @@ def main():
 
     # 初始化用于记录历史 loss 的列表
     history_total = []
-    history_traj = []
+    history_vel = []
+    history_kin = []
     history_force = []
     history_jac = []
+    history_hes = []
+    history_w_vel = []
+    history_w_kin = []
+    history_w_force = []
     
     print(f"数据加载完成。样本数: {len(train_dataset)}")
 
@@ -232,10 +219,15 @@ def main():
         T_max = CONFIG['train']['epochs'], 
         eta_min = CONFIG['train']['min_lr']
     )
-    loss_fn = HybridLoss(
-        weight_traj = CONFIG['loss']['w_traj'],
-        weight_force = CONFIG['loss']['w_force']
-    ).to(device)
+    loss_fn = HybridLoss().to(device)
+    relo = ReLoBRaLo(
+        n_losses=3,
+        alpha=CONFIG['loss']['alpha'],
+        beta=CONFIG['loss']['beta'],
+        tau=CONFIG['loss']['tau'],
+        base_weights=CONFIG['loss']['base_weights'],
+        max_epochs=CONFIG['train']['epochs']
+    )
 
     # 4. 准备积分时间向量
     # T = window_size, dt = 0.02
@@ -248,31 +240,16 @@ def main():
 
     # 5. 训练主循环
     print("开始训练...")
-    # 定义预热参数
-    warmup_start_epoch = 10  # 从第几轮开始引入轨迹 Loss
-    warmup_epochs = 30       # 预热过渡期需要多少轮
-    start_w_traj = 1e-2      # 轨迹 Loss 的初始极小权重
-    end_w_traj = CONFIG['loss']['w_traj'] # 最终目标权重
 
     for epoch in range(CONFIG['train']['epochs']):
         model.train()
 
         epoch_loss_total = 0.0
-        epoch_loss_traj = 0.0
+        epoch_loss_vel = 0.0
+        epoch_loss_kin = 0.0
         epoch_loss_force = 0.0
         epoch_loss_jac = 0.0
-
-        # 动态调整 Loss 权重 (指数预热策略)
-        if epoch < warmup_start_epoch:
-            # 前 10 轮：关闭轨迹积分 Loss，仅拟合瞬间的气动力
-            loss_fn.w_traj = 0.0
-            loss_fn.w_force = 1.0
-        else:
-            # 10 轮之后：开启轨迹积分 Loss，指数平滑过渡
-            current_step = min(epoch - warmup_start_epoch, warmup_epochs)
-            current_w_traj = start_w_traj * ((end_w_traj / start_w_traj) ** (current_step / warmup_epochs))
-            loss_fn.w_traj = current_w_traj
-            loss_fn.w_force = CONFIG['loss']['w_force']
+        epoch_loss_hes = 0.0
 
         for batch_idx, batch in enumerate(train_loader):
             # A. 搬运数据到 GPU
@@ -283,79 +260,135 @@ def main():
             gt_states_norm = batch['gt_states_norm'].to(device) # (B, T, 12)
 
             optimizer.zero_grad()
-            
+
             # B. 注入控制上下文 (Context Injection)
-            # 告诉模型：在接下来积分的这段时间里，舵面是怎么动的
             model.set_control_context(t_span, controls)
-            
+
             # C. 积分 (Forward - Integration) -> 得到轨迹
-            # odeint 返回形状是 (T, B, 12)，需要转置为 (B, T, 12) 以匹配 Dataset
-            # method='rk4' 显存占用适中，'dopri5' 精度更高但更慢
-            pred_traj_norm = odeint(model, x0, t_span, method='rk4') 
+            pred_traj_norm = odeint(model, x0, t_span, method='rk4')
             pred_traj_norm = pred_traj_norm.permute(1, 0, 2)
-            
+
             # D. 诊断 (Diagnostic - Teacher Forcing) -> 得到力
             force_dict = model.predict_forces_and_moments(gt_states_norm, controls)
-            
-            # 提取预测的加速度 (用于和 IMU 数据 gt_force 对比)
             pred_force_real = force_dict['pred_force'] # (B, T, 6)
-            
+
             # E. 计算 Loss
-            loss, log_dict = loss_fn(pred_traj_norm, gt_states_norm, pred_force_real, gt_force)
-            loss_jac = model.net.compute_jacobian_regularization(gt_states_norm, controls)
-            loss += loss_jac * CONFIG['loss']['w_jac']
-            log_dict['loss_jac'] = loss_jac.item()
-            
+            # 数据/物理损失: ReLoBRaLo 动态加权
+            loss_vel, loss_kin, loss_force = loss_fn(pred_traj_norm, gt_states_norm, pred_force_real, gt_force)
+            w_vel, w_kin, w_force = relo.get_weights()
+
+            # 正则化损失: 固定权重 (按开关决定是否计算)
+            use_jac = CONFIG['loss']['enable_jacobian']
+            use_hes = CONFIG['loss']['enable_hessian']
+
+            loss_jac = model.net.compute_jacobian_regularization(gt_states_norm, controls) if use_jac else torch.tensor(0.0, device=device)
+            loss_hes = model.net.compute_hessian_regularization(gt_states_norm, controls) if use_hes else torch.tensor(0.0, device=device)
+
+            loss = (w_vel*loss_vel + w_kin*loss_kin + w_force*loss_force
+                    + (CONFIG['loss']['w_jac']*loss_jac if use_jac else 0.0)
+                    + (CONFIG['loss']['w_hes']*loss_hes if use_hes else 0.0))
+
+            log_dict = {
+                'loss_vel': loss_vel.item(),
+                'loss_kin': loss_kin.item(),
+                'loss_force': loss_force.item(),
+                'loss_jac': loss_jac.item(),
+                'loss_hes': loss_hes.item(),
+            }
+
             # F. 反向传播
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            
+
             epoch_loss_total += loss.item()
-            epoch_loss_traj += log_dict['loss_traj']
+            epoch_loss_vel += log_dict['loss_vel']
+            epoch_loss_kin += log_dict['loss_kin']
             epoch_loss_force += log_dict['loss_force']
             epoch_loss_jac += log_dict['loss_jac']
-            
+            epoch_loss_hes += log_dict['loss_hes']
+
             if batch_idx % 10 == 0:
                 print(f"Epoch {epoch} | Batch {batch_idx} | Loss: {loss.item():.6f} "
-                      f"(Traj: {log_dict['loss_traj']:.6f}, "
+                      f"(Vel: {log_dict['loss_vel']:.6f}, "
+                      f"Kin: {log_dict['loss_kin']:.6f}, "
                       f"Force: {log_dict['loss_force']:.6f}, "
-                      f"Jac: {log_dict['loss_jac']:.6f})")
+                      f"Jac: {log_dict['loss_jac']:.6f}, "
+                      f"Hes: {log_dict['loss_hes']:.6f}) "
+                      f"[w: V={w_vel:.3f} K={w_kin:.3f} F={w_force:.3f}]")
 
         avg_total = epoch_loss_total / len(train_loader)
-        avg_traj = epoch_loss_traj / len(train_loader)
+        avg_vel = epoch_loss_vel / len(train_loader)
+        avg_kin = epoch_loss_kin / len(train_loader)
         avg_force = epoch_loss_force / len(train_loader)
         avg_jac = epoch_loss_jac / len(train_loader)
+        avg_hes = epoch_loss_hes / len(train_loader)
 
         history_total.append(avg_total)
-        history_traj.append(avg_traj)
+        history_vel.append(avg_vel)
+        history_kin.append(avg_kin)
         history_force.append(avg_force)
         history_jac.append(avg_jac)
+        history_hes.append(avg_hes)
 
-        print(f"Epoch {epoch} 完成 | 平均 Loss: {avg_total:.6f}")
+        # ReLoBRaLo 权重更新 (仅管理数据/物理损失)
+        relo.update([avg_vel, avg_kin, avg_force])
+        w_v, w_k, w_f = relo.get_weights()
+        history_w_vel.append(w_v)
+        history_w_kin.append(w_k)
+        history_w_force.append(w_f)
+
+        print(f"Epoch {epoch} 完成 | 平均 Loss: {avg_total:.6f} | "
+              f"下轮权重: V={w_v:.3f} K={w_k:.3f} F={w_f:.3f}")
         
         scheduler.step()
         if (epoch + 1) % 10 == 0:
             torch.save(model.state_dict(), CONFIG['paths']['model_save'])
             print(f"模型已保存至 {CONFIG['paths']['model_save']}")
 
-    # 6. 绘制训练曲线
-    plt.figure(figsize=(16, 9))
+    # 6. 绘制训练曲线 (双子图: Loss + ReLoBRaLo 数据权重)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 12),
+                                    gridspec_kw={'height_ratios': [2, 1]})
     epochs_range = range(1, CONFIG['train']['epochs'] + 1)
-    
-    plt.plot(epochs_range, history_total, label='Total Loss', color='black', linewidth=2)
-    plt.plot(epochs_range, history_traj, label='Trajectory Loss (Raw MSE)', color='blue', linestyle='--')
-    plt.plot(epochs_range, history_force, label='Force Loss (Var-Normalized)', color='red', linestyle='-.')
-    plt.plot(epochs_range, history_jac, label='Jacobian Loss (Frobenius Norm)', color='green', linestyle=':')
-    
-    plt.title('Neural ODE Training Convergence')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss Value')
-    
-    plt.yscale('log') 
-    plt.legend()
-    plt.grid(True, which="both", ls="--", alpha=0.5)
-    
+
+    # 上图: Loss 曲线
+    use_jac = CONFIG['loss']['enable_jacobian']
+    use_hes = CONFIG['loss']['enable_hessian']
+
+    ax1.plot(epochs_range, history_total, label='Total Loss', color='black', linewidth=2)
+    ax1.plot(epochs_range, history_vel, label='Velocity Loss', color='blue', linestyle='--')
+    ax1.plot(epochs_range, history_kin, label='Kinematic Loss', color='cyan', linestyle='--')
+    ax1.plot(epochs_range, history_force, label='Force Loss', color='red', linestyle='-.')
+    ax1.plot(epochs_range, history_jac, label=f'Jacobian Loss{"" if use_jac else " (OFF)"}', color='green', linestyle=':')
+    ax1.plot(epochs_range, history_hes, label=f'Hessian Loss{"" if use_hes else " (OFF)"}', color='purple', linestyle=':')
+    ax1.set_ylabel('Loss Value')
+    ax1.set_yscale('log')
+    ax1.legend()
+    ax1.grid(True, which="both", ls="--", alpha=0.5)
+    ax1.set_title('Neural ODE Training Convergence')
+
+    # 下图: ReLoBRaLo 动态权重 (vel, kin, force)
+    ax2.plot(epochs_range, history_w_vel, label='w_vel', color='blue', linewidth=1.5)
+    ax2.plot(epochs_range, history_w_kin, label='w_kin', color='cyan', linewidth=1.5)
+    ax2.plot(epochs_range, history_w_force, label='w_force', color='red', linewidth=1.5)
+    ax2.set_xlabel('Epochs')
+    ax2.set_ylabel('Weight')
+    ax2.legend()
+    ax2.grid(True, ls="--", alpha=0.5)
+
+    # 动态生成标题，显示实际启用的正则化项
+    reg_status = []
+    if use_jac:
+        reg_status.append(f'w_jac={CONFIG["loss"]["w_jac"]}')
+    else:
+        reg_status.append('w_jac=OFF')
+    if use_hes:
+        reg_status.append(f'w_hes={CONFIG["loss"]["w_hes"]}')
+    else:
+        reg_status.append('w_hes=OFF')
+    ax2.set_title(f'ReLoBRaLo Data Weights (Reg fixed: {", ".join(reg_status)})')
+
+    plt.tight_layout()
     save_fig_path = 'training_loss_curve.png'
     plt.savefig(save_fig_path, dpi=300, bbox_inches='tight')
     print(f"Loss 曲线图已保存至: {save_fig_path}")

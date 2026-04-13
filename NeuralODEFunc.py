@@ -117,6 +117,68 @@ class CoefficientNet(nn.Module):
 
         return reg_a + reg_b
 
+    def compute_hessian_regularization(self, state_norm, u_norm, n_probes=2):
+        """
+        掩码海森正则化: 惩罚网络输出对角速度和舵面输入的二阶导数（曲率）。
+
+        通过在输入空间探针 v_in 上施加掩码，选择性惩罚特定维度的曲率：
+        - 保护 (v_in 置零): u(0), v(1), w(2), δt(9)
+          承载诱导阻力、失速、arctan(w/u) 运动学非线性、α-β 交叉耦合
+        - 惩罚 (v_in 正常采样): p(3), q(4), r(5), δe(6), δa(7), δr(8)
+          阻尼力矩线性、舵面效应线性，非线性多为噪声拟合
+
+        已知局限: 会顺带惩罚保护组与惩罚组的交叉二阶导 (如 ∂²Cm/∂w∂δe)。
+        在常规飞行包线内安全。若需飞大迎角，可将舵面移入保护组。
+
+        Args:
+            state_norm (Tensor): 归一化状态量 (..., 12)
+            u_norm (Tensor): 归一化控制量 (..., 4)
+            n_probes (int): Hutchinson 探针数量，默认 2
+
+        Returns:
+            reg (Tensor): 海森正则化项 (标量)
+        """
+        # 1. 准备完整 10 维输入 (需要对全部输入求导，包括舵面)
+        state_6 = state_norm[..., :6].detach()
+        u_4 = u_norm.detach()
+        full_input = torch.cat([state_6, u_4], dim=-1).requires_grad_(True)
+        coeffs = self.forward(full_input)  # (..., 6)
+
+        # 2. 惩罚维度索引: p(3), q(4), r(5), δe(6), δa(7), δr(8)
+        penalize_dims = [3, 4, 5, 6, 7, 8]
+
+        reg = torch.tensor(0.0, device=coeffs.device)
+
+        for _ in range(n_probes):
+            # 3. 输出空间探针 (全部 6 个系数参与，不加掩码)
+            v_out = torch.randn_like(coeffs)
+
+            # 4. 第一步 VJP: g = v_out^T @ J, shape = (..., 10)
+            g = torch.autograd.grad(
+                outputs=torch.sum(v_out * coeffs),
+                inputs=full_input,
+                create_graph=True,
+                retain_graph=True
+            )[0]
+
+            # 5. 输入空间探针 (仅惩罚维度采样，保护维度置零)
+            v_in = torch.zeros_like(full_input)
+            v_in[..., penalize_dims] = torch.randn(
+                *full_input.shape[:-1], len(penalize_dims),
+                device=full_input.device)
+
+            # 6. 第二步 HVP: Hv = ∂(g · v_in)/∂full_input
+            Hv = torch.autograd.grad(
+                outputs=torch.sum(g * v_in),
+                inputs=full_input,
+                create_graph=True,
+                retain_graph=True
+            )[0]
+
+            # 7. 累加 ||Hv||²
+            reg = reg + torch.mean(Hv ** 2)
+
+        return reg / n_probes
 
 class AerialSystemODE(nn.Module):
     def __init__(self, neural_net, known_props, scaler, device):
