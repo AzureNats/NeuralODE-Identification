@@ -144,8 +144,9 @@ class CoefficientNet(nn.Module):
         full_input = torch.cat([state_6, u_4], dim=-1).requires_grad_(True)
         coeffs = self.forward(full_input)  # (..., 6)
 
-        # 2. 惩罚维度索引: p(3), q(4), r(5), δe(6), δa(7), δr(8)
-        penalize_dims = [3, 4, 5, 6, 7, 8]
+        # 2. 惩罚维度索引: 仅惩罚角速度 p(3), q(4), r(5)
+        # 舵面 δe(6), δa(7), δr(8) 已移出，保留其对阻力的二次效应
+        penalize_dims = [3, 4, 5]
 
         reg = torch.tensor(0.0, device=coeffs.device)
 

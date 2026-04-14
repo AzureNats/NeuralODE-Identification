@@ -346,7 +346,7 @@ class FlightDataPreprocessor:
         数值微分和导数监督标签生成。
         
         功能：
-        1. 计算角速度的导数 (dot_p, dot_q, dot_r)，采用savgol_filter。
+        1. 计算角速度的导数 (dot_p, dot_q, dot_r)。
         2. 修正 IMU 加速度数据，将其转换到重心 (CG) 处，作为力 Label。
         
         Args:
@@ -362,14 +362,14 @@ class FlightDataPreprocessor:
         # 1. 计算角加速度 (数值微分)
         for col in ['p', 'q', 'r']:
             dot_col = f'dot_{col}'
-            # df[dot_col] = np.gradient(df[col].values, self.dt, edge_order=1)
-            df[dot_col] = savgol_filter(
-                df[col].values, 
-                window_length = 11,     # 窗口大小 (奇数)
-                polyorder = 2,          # 多项式阶数
-                deriv = 1,              # 求一阶导
-                delta = self.dt         # 自动除以 dt
-            )
+            df[dot_col] = np.gradient(df[col].values, self.dt, edge_order=1)
+            # df[dot_col] = savgol_filter(
+            #     df[col].values, 
+            #     window_length = 11,     # 窗口大小 (奇数)
+            #     polyorder = 2,          # 多项式阶数
+            #     deriv = 1,              # 求一阶导
+            #     delta = self.dt         # 自动除以 dt
+            # )
             
         # 2. IMU 加速度修正 (杆臂效应)
         ax_imu = df['ax'].values

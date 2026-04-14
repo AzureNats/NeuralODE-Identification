@@ -10,6 +10,7 @@ from data_processing import FlightDataPreprocessor
 from relobralo import ReLoBRaLo
 import os
 import matplotlib.pyplot as plt
+import time
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_default_dtype(torch.float32)
@@ -97,6 +98,8 @@ class HybridLoss(nn.Module):
     
 # 三. 主函数
 def main():
+    start_time = time.time()
+
     # 1. 全局配置
     CONFIG = {
         # 路径配置
@@ -131,7 +134,7 @@ def main():
             'num_workers': 0,          # DataLoader工作线程数 (Windows建议设为0)
         },
 
-        # ReLoBRaLo 动态损失平衡参数 (仅管理数据/物理损失)
+        # ReLoBRaLo 及正则化参数
         'loss': {
             'alpha': 0.95,             # 长期 vs 短期平衡系数 (越小越重视短期变化)
             'beta': 0.5,               # EMA 平滑系数 (越小权重响应越快)
@@ -139,8 +142,8 @@ def main():
             'base_weights': [1.0, 1.0, 1.0],  # [vel, kin, force] 基础缩放因子
             'enable_jacobian': True,   # Jacobian 正则化开关
             'enable_hessian': True,    # Hessian 正则化开关
-            'w_jac': 30.0,             # 雅可比正则化固定权重
-            'w_hes': 5.0,              # 海森正则化固定权重
+            'w_jac': 30.0,             # Jacobian 正则化固定权重
+            'w_hes': 2.5,              # Hessian 正则化固定权重
         },
         
         # 物理参数
@@ -261,14 +264,14 @@ def main():
 
             optimizer.zero_grad()
 
-            # B. 注入控制上下文 (Context Injection)
+            # B. 注入控制上下文
             model.set_control_context(t_span, controls)
 
-            # C. 积分 (Forward - Integration) -> 得到轨迹
+            # C. 积分 -> 得到轨迹
             pred_traj_norm = odeint(model, x0, t_span, method='rk4')
             pred_traj_norm = pred_traj_norm.permute(1, 0, 2)
 
-            # D. 诊断 (Diagnostic - Teacher Forcing) -> 得到力
+            # D. 诊断 -> 得到力
             force_dict = model.predict_forces_and_moments(gt_states_norm, controls)
             pred_force_real = force_dict['pred_force'] # (B, T, 6)
 
@@ -331,7 +334,7 @@ def main():
         history_jac.append(avg_jac)
         history_hes.append(avg_hes)
 
-        # ReLoBRaLo 权重更新 (仅管理数据/物理损失)
+        # ReLoBRaLo 权重更新
         relo.update([avg_vel, avg_kin, avg_force])
         w_v, w_k, w_f = relo.get_weights()
         history_w_vel.append(w_v)
@@ -392,7 +395,12 @@ def main():
     save_fig_path = 'training_loss_curve.png'
     plt.savefig(save_fig_path, dpi=300, bbox_inches='tight')
     print(f"Loss 曲线图已保存至: {save_fig_path}")
-    plt.show()
+    
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    hours, rem = divmod(elapsed_time, 3600)
+    minutes, seconds = divmod(rem, 60)
+    print(f"训练程序运行结束, 总耗时 {int(hours):02d}小时 {int(minutes):02d}分钟 {int(seconds):02d}秒")
 
 if __name__ == '__main__':
     main()

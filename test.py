@@ -132,7 +132,7 @@ def main():
         sample_idx = random.randint(10, len(test_dataset) - 10)
         print(f"警告: 尝试 {max_attempts} 次后未找到满足变化要求的样本，使用随机样本。")
 
-    # sample_idx = 886  # 手动指定测试样本
+    # sample_idx = 591  # 手动指定测试样本
     print(f"本次抽取的测试切片 Index: {sample_idx} / {len(test_dataset)}")
     sample = test_dataset[sample_idx]
     
