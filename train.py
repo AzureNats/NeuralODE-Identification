@@ -129,7 +129,7 @@ def main():
             'batch_size': 64,          # 批大小
             'max_lr': 1e-3,            # 初始学习率
             'min_lr': 1e-5,            # 最小学习率
-            'epochs': 200,             # 总训练轮数 (关闭force loss后增加)
+            'epochs': 200,             # 总训练轮数
             'save_interval': 10,       # 每隔多少个Epoch保存一次模型
             'num_workers': 0,          # DataLoader工作线程数 (Windows建议设为0)
         },
