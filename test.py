@@ -73,8 +73,8 @@ def main():
     # 1. 配置参数
     CONFIG = {
         'paths': {
-            'scaler': 'scaler41.pkl',             
-            'dataset': 'dataset41.pt',            
+            'scaler': 'scaler42.pkl',             
+            'dataset': 'dataset42.pt',            
             'model_save': 'model_weights.pth'   
         },
         'data': {
@@ -132,7 +132,7 @@ def main():
         sample_idx = random.randint(10, len(test_dataset) - 10)
         print(f"警告: 尝试 {max_attempts} 次后未找到满足变化要求的样本，使用随机样本。")
 
-    # sample_idx = 591  # 手动指定测试样本
+    # sample_idx = 426  # 手动指定测试样本
     print(f"本次抽取的测试切片 Index: {sample_idx} / {len(test_dataset)}")
     sample = test_dataset[sample_idx]
     
@@ -257,20 +257,19 @@ def main():
     plt.savefig(save_path2, dpi=200)
     print(f"速度与角速度轨迹图已保存为: {save_path2}")
 
-    # 9. 绘制姿态角与位置轨迹对比图 (phi, theta, psi, x, y, z)
+    # 9. 绘制位置与姿态角轨迹对比图 (x, y, z, phi, theta, psi)
     fig3, axes3 = plt.subplots(2, 3, figsize=(15, 8))
-    fig3.suptitle(f'Attitude & Position Trajectory Prediction (#{sample_idx})', fontsize=16)
+    fig3.suptitle(f'Position & Attitude Trajectory Prediction (#{sample_idx})', fontsize=16)
 
-    pos_keys = ['phi (rad)', 'theta (rad)', 'psi (rad)',
-                'x (m)', 'y (m)', 'z (m)']
+    pos_keys = ['x (m)', 'y (m)', 'z (m)',
+                'phi (rad)', 'theta (rad)', 'psi (rad)']
+    state_indices = [9, 10, 11, 6, 7, 8]
 
-    for i, key in enumerate(pos_keys):
+    for i, (key, state_idx) in enumerate(zip(pos_keys, state_indices)):
         row = i // 3
         col = i % 3
         ax = axes3[row, col]
 
-        # 后 6 个状态对应索引 6~11
-        state_idx = i + 6
         ax.plot(time_axis, gt_real[:, state_idx], label='Ground Truth', color='black', linewidth=2)
         ax.plot(time_axis, pred_real[:, state_idx], label='Prediction (Integration)', color='red', linestyle='--', linewidth=2)
 
@@ -300,7 +299,7 @@ def main():
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     save_path3 = os.path.join(result_dir, 'trajectory_prediction.png')
     plt.savefig(save_path3, dpi=200)
-    print(f"姿态与位置轨迹图已保存为: {save_path3}")
+    print(f"位置与姿态轨迹图已保存为: {save_path3}")
 
 if __name__ == '__main__':
     main()

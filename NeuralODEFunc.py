@@ -553,7 +553,7 @@ class AerialSystemODE(nn.Module):
         # d(norm)/dt = d(real)/dt * scale_factor
         dx_dt_norm = self.scaler.scale_derivative_vector(dx_dt_real, self.state_keys)
 
-        return torch.clamp(dx_dt_norm, min=-10.0, max=10.0)
+        return torch.clamp(dx_dt_norm, min=-1000.0, max=1000.0)
     
     def predict_forces_and_moments(self, state_norm, u_norm):
         """

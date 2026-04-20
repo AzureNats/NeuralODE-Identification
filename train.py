@@ -104,9 +104,9 @@ def main():
     CONFIG = {
         # 路径配置
         'paths': {
-            'raw_csv': 'Document41.csv',          # 原始飞行数据 (CSV格式)
-            'scaler': 'scaler41.pkl',             # 归一化参数保存路径 (Pickle)
-            'dataset': 'dataset41.pt',            # 预处理后的数据集保存路径 (PyTorch Tensor)
+            'raw_csv': 'Document42.csv',         # 原始飞行数据 (CSV格式)
+            'scaler': 'scaler42.pkl',            # 归一化参数保存路径 (Pickle)
+            'dataset': 'dataset42.pt',           # 预处理后的数据集保存路径 (PyTorch Tensor)
             'pre_wei': 'pretrained_coeffs.pth',  # 预训练模型权重路径 (PyTorch Model)
             'model_save': 'model_weights.pth'    # 模型权重保存路径 (PyTorch Model)
         },
@@ -127,9 +127,9 @@ def main():
         # 训练超参数
         'train': {
             'batch_size': 64,          # 批大小
-            'learning_rate': 1e-5,     # 初始学习率
-            'min_lr': 1e-6,            # 最小学习率
-            'epochs': 100,             # 总训练轮数
+            'max_lr': 1e-3,            # 初始学习率
+            'min_lr': 1e-5,            # 最小学习率
+            'epochs': 200,             # 总训练轮数 (关闭force loss后增加)
             'save_interval': 10,       # 每隔多少个Epoch保存一次模型
             'num_workers': 0,          # DataLoader工作线程数 (Windows建议设为0)
         },
@@ -142,8 +142,8 @@ def main():
             'base_weights': [1.0, 1.0, 1.0],  # [vel, kin, force] 基础缩放因子
             'enable_jacobian': True,   # Jacobian 正则化开关
             'enable_hessian': True,    # Hessian 正则化开关
-            'w_jac': 30.0,             # Jacobian 正则化固定权重
-            'w_hes': 2.5,              # Hessian 正则化固定权重
+            'w_jac': 10.0,             # Jacobian 正则化固定权重
+            'w_hes': 2.0,              # Hessian 正则化固定权重
         },
         
         # 物理参数
@@ -216,7 +216,7 @@ def main():
         scaler=scaler, 
         device=device
     ).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=CONFIG['train']['learning_rate'])
+    optimizer = optim.Adam(model.parameters(), lr=CONFIG['train']['max_lr'])
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer, 
         T_max = CONFIG['train']['epochs'], 
