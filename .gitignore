@@ -5,6 +5,8 @@ engine/
 results/
 validation_plots/
 viz_results/
+markdowns/
+debug_results/
 *.csv
 *.txt
 *.log
@@ -13,3 +15,7 @@ viz_results/
 *.pt
 *.png
 *.docx
+*.m
+diagnose.py
+test_relobralo.py
+CLAUDE.md

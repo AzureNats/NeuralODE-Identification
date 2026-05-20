@@ -208,7 +208,7 @@ class FlightDataValidator:
         plt.close()
 
 if __name__ == "__main__":
-    CSV_FILE = "Document42.csv"
+    CSV_FILE = "Document52.csv"
     # 如果原始CSV中的欧拉角和气流角是角度度数(deg)，设为 True；如果是弧度(rad)，设为 False
     ANGLES_IN_DEGREES = False 
     

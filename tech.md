@@ -26,7 +26,47 @@ $$
 
 其中 $R = 6371000$ m（地球半径）。
 
-### 1.3 状态变量重构
+### 1.3 传感器噪声注入（可选）
+为了使仿真数据更接近真实飞行记录，可在 `preprocess.py` 中启用噪声注入功能。仅对IMU数据添加噪声，姿态角和地速由导航滤波器输出，精度远高于IMU原始数据，不加噪声。
+
+**噪声频率特性设计**：
+
+- **IMU数据**（加速度、陀螺仪）：10-20Hz带通噪声
+  - 模拟高频振动噪声（发动机/螺旋桨引起）
+  - 真实IMU高频噪声（40-50Hz+）超出采样率表示能力，10-20Hz是可表示范围内的高频段
+
+**噪声标准差配置**（针对420kg级固定翼无人机）：
+- **IMU加速度** (`ax, ay, az`)：$\sigma = 0.1$ m/s²
+- **IMU陀螺仪** (`p, q, r`)：$\sigma = 0.01$ rad/s（约0.57°/s）
+
+**不加噪声的数据**：
+- **姿态角** (`phi, theta, psi`)：飞控EKF融合输出，噪声频段（0.5-2Hz）与横向动力学频段重叠，加噪会破坏训练标签的物理自洽性
+- **地速** (`u_g, v_g, w_g`)：GPS+卡尔曼滤波输出，同理
+- **控制量**（`delta_e, delta_a, delta_r, delta_t`）：保持输入确定性
+- **气动数据**（`TAS, alpha, beta, Q`）和高度（`h`）
+
+**注意事项**：
+- 使用固定随机种子（默认42）确保数据集可重复性
+- 通过 `add_noise` 参数控制是否启用噪声注入
+- 带通噪声通过白噪声 + 带通滤波器生成
+
+### 1.4 低通滤波
+对IMU原始测量数据进行零相位低通滤波：
+
+**滤波器配置**：
+- **IMU数据组** (`ax, ay, az, p, q, r`)：
+  - 截止频率：8 Hz
+  - 滤波器：2阶Butterworth
+  - 原因：包含高频振动噪声（10-20Hz），且需要进行数值微分
+
+**不滤波的数据**：
+- **姿态角** (`phi, theta, psi`)：未注入噪声，无需滤波
+- **地速** (`u_g, v_g, w_g`)：未注入噪声，无需滤波
+
+**实现方法**：
+使用 `scipy.signal.filtfilt` 实现零相位滤波，避免相位延迟。
+
+### 1.5 状态变量重构
 计算机体轴空速分量 $[u, v, w]^T$。根据仿真环境选择计算方式：
 
 **无风模式**（几何投影法）：
@@ -47,13 +87,18 @@ w &= TAS \cdot \sin(\alpha) \cdot \cos(\beta)
 \end{aligned}
 $$
 
-### 1.4 数值微分与导数监督
+### 1.6 数值微分与导数监督
 **角加速度计算**：
-使用中心差分法计算角加速度 $\dot{p}, \dot{q}, \dot{r}$：
+使用Savitzky-Golay滤波器计算角加速度 $\dot{p}, \dot{q}, \dot{r}$：
 
 ```python
-dot_p = np.gradient(p, dt, edge_order=1)
+dot_p = savgol_filter(p, window_length=11, polyorder=2, deriv=1, delta=dt)
 ```
+
+**优势**：
+- 在微分的同时进行平滑，有效抑制噪声放大
+- 对噪声数据的微分效果优于简单的中心差分
+- 窗口长度11帧（0.22s @ 50Hz），多项式阶数2
 
 **IMU杆臂效应修正**：
 将IMU测量的加速度修正到重心（CG）位置：
@@ -64,7 +109,7 @@ $$
 
 其中 $\mathbf{r}_{arm}$ 为IMU相对于CG的位置矢量。
 
-### 1.5 数据归一化
+### 1.7 数据归一化
 采用混合归一化策略，针对不同物理量选择合适的方法：
 
 **控制量**（Min-Max归一化）：
@@ -79,7 +124,7 @@ $$
 
 归一化参数保存至 `scaler.pkl`，供训练和测试阶段复用。
 
-### 1.6 轨迹切片
+### 1.8 轨迹切片
 使用滑动窗口将连续飞行数据切割成固定长度片段：
 
 **参数设置**：
@@ -100,9 +145,12 @@ dataset = {
 }
 ```
 
-### 1.7 注意事项
+### 1.9 注意事项
 1. **psi角跳变问题**：使用 `np.unwrap()` 处理360°跳变。
-2. **滤波器选择**：当前版本已注释掉低通滤波环节，直接使用原始数据。
+2. **噪声注入与滤波**：
+   - 噪声注入在 `preprocess.py` 中完成，通过 `add_noise` 参数控制
+   - 低通滤波在 `data_processing.py` 中完成，采用分级策略
+   - 角加速度微分使用 `savgol_filter`，在微分的同时进行平滑
 3. **数据物理一致性**：训练前必须运行 `check_physics.py` 验证数据合理性。
 
 ---
@@ -297,10 +345,10 @@ $$
 ## 4. 训练策略
 
 ### 4.1 混合损失函数
-将轨迹损失拆分为速度损失与运动学损失，便于精细调整权重：
+将轨迹损失拆分为速度损失与运动学损失，力损失拆分为纵向与横航向，便于精细调整权重：
 
 $$
-\mathcal{L}_{total} = w_{vel} \mathcal{L}_{vel} + w_{kin} \mathcal{L}_{kin} + w_{force} \mathcal{L}_{force} + w_{jac} \mathcal{L}_{jac} + w_{hes} \mathcal{L}_{hes}
+\mathcal{L}_{total} = w_{vel} \mathcal{L}_{vel} + w_{kin} \mathcal{L}_{kin} + w_{f,lon} \mathcal{L}_{f,lon} + w_{f,lat} \mathcal{L}_{f,lat} + w_{jac} \mathcal{L}_{jac} + w_{hes} \mathcal{L}_{hes}
 $$
 
 **各项定义**：
@@ -317,13 +365,18 @@ $$
 $$
 包含 $[\phi, \theta, \psi, x, y, z]$。
 
-3. **动力学损失**（方差归一化）：
+3. **纵向动力学损失**（方差归一化）：
 $$
-\mathcal{L}_{force} = \frac{1}{6} \sum_{i=1}^{6} \frac{\text{MSE}(\mathbf{f}_{pred}^{(i)}, \mathbf{f}_{gt}^{(i)})}{\text{Var}(\mathbf{f}_{gt}^{(i)})}
+\mathcal{L}_{f,lon} = \frac{1}{3} \sum_{i \in \{a_x, a_z, \dot{q}\}} \frac{\text{MSE}(\mathbf{f}_{pred}^{(i)}, \mathbf{f}_{gt}^{(i)})}{\text{Var}(\mathbf{f}_{gt}^{(i)})}
 $$
-其中 $\mathbf{f} = [a_x, a_y, a_z, \dot{p}, \dot{q}, \dot{r}]$。
 
-**注意**：
+4. **横航向动力学损失**（方差归一化）：
+$$
+\mathcal{L}_{f,lat} = \frac{1}{3} \sum_{i \in \{a_y, \dot{p}, \dot{r}\}} \frac{\text{MSE}(\mathbf{f}_{pred}^{(i)}, \mathbf{f}_{gt}^{(i)})}{\text{Var}(\mathbf{f}_{gt}^{(i)})}
+$$
+
+**设计原理**：
+- 纵横向力损失分离后，ReLoBRaLo可独立调节横向力的权重，避免横向梯度信号被纵向通道稀释
 - 动力学损失使用真实状态（GT）输入模型计算预测力，而非ODE积分轨迹
 - 比力 $\mathbf{a}$ 为非惯性系加速度（已扣除重力）
 
@@ -331,31 +384,39 @@ $$
 基于损失值历史衰减率的自适应权重调整算法。
 
 **核心思想**：
-- 长期分量：与初始损失 $\mathbf{L}_0$ 比较
-- 短期分量：与随机回溯历史损失 $\mathbf{L}_{lookback}$ 比较
-- EMA平滑：避免权重剧烈波动
+- 长期分量：与初始损失 $\mathbf{L}_0$ 比较，评估整体进度
+- 短期分量：与上一步损失 $\mathbf{L}_{t-1}$ 比较，评估最近进度
+- Saudade 机制：通过伯努利随机变量偶尔触发"回溯冲击"
 
 **权重更新公式**：
+
+步骤一：计算相对平衡权重
 $$
-\begin{aligned}
-\hat{\mathbf{w}}_{long} &= \text{softmax}\left(\frac{\mathbf{L}^{curr}}{\mathbf{L}_0 \cdot \tau}\right) \cdot n \\
-\hat{\mathbf{w}}_{short} &= \text{softmax}\left(\frac{\mathbf{L}^{curr}}{\mathbf{L}_{lookback} \cdot \tau}\right) \cdot n \\
-\hat{\mathbf{w}}_{combined} &= \alpha \hat{\mathbf{w}}_{long} + (1-\alpha) \hat{\mathbf{w}}_{short} \\
-\mathbf{w}_{dynamic} &= \beta \mathbf{w}_{dynamic}^{prev} + (1-\beta) \hat{\mathbf{w}}_{combined}
-\end{aligned}
+\lambda_i^{bal}(t, t') = m \cdot \frac{\exp(\frac{\mathcal{L}_i(t)}{\mathcal{T}\mathcal{L}_i(t')})}{\sum_{j=1}^m \exp(\frac{\mathcal{L}_j(t)}{\mathcal{T}\mathcal{L}_j(t')})}
+$$
+
+步骤二：Saudade 随机回溯
+$$
+\lambda_i^{hist}(t) = \rho \lambda_i(t-1) + (1-\rho) \lambda_i^{bal}(t, 0)
+$$
+其中 $\rho \sim \text{Bernoulli}(\mathbb{E}[\rho])$，期望值通常接近 1（如 0.999）
+
+步骤三：指数衰减更新
+$$
+\lambda_i(t) = \alpha \lambda_i^{hist}(t) + (1-\alpha) \lambda_i^{bal}(t, t-1)
 $$
 
 **最终权重**：
 $$
-\mathbf{w}_{final} = \mathbf{w}_{base} \odot \mathbf{w}_{dynamic}
+\mathbf{w}_{final} = \mathbf{w}_{base} \odot \boldsymbol{\lambda}(t)
 $$
 
 其中 $\mathbf{w}_{base}$ 为基础缩放因子（补偿量级差异），$\odot$ 为逐元素乘法。
 
 **超参数**：
-- $\alpha = 0.95$：长期vs短期平衡系数
-- $\beta = 0.5$：EMA平滑系数
-- $\tau = 0.5$：Softmax温度
+- $\alpha = 0.95$：指数衰减率（控制"记住过去"的能力）
+- $\mathbb{E}[\rho] = 0.999$：Saudade 期望值（控制回溯频率，约每 1000 步触发一次）
+- $\mathcal{T} = 1.0$：Softmax 温度（越小分布越尖锐）
 - $\mathbf{w}_{base} = [1.0, 1.0, 1.0]$：速度、运动学、动力学基础权重
 
 **正则化权重**（固定）：
@@ -450,6 +511,7 @@ for epoch in range(epochs):
 2. **数值发散**：导数截断 + 梯度裁剪（2026-3-10）
 3. **$a_z$ 稳态误差**：Jacobian正则化（2026-4-9）
 4. **$a_x$ 稳态误差**：Hessian正则化（2026-4-13）
+5. **噪声数据处理**：分级滤波策略 + Savgol微分（2026-4-29）
 
 ---
 
@@ -488,12 +550,12 @@ config = {
 ### 6.3 损失函数权重
 ```python
 loss_config = {
-    'alpha': 0.95,              # ReLoBRaLo长期vs短期
-    'beta': 0.5,                # ReLoBRaLo EMA平滑
-    'tau': 0.5,                 # Softmax温度
-    'base_weights': [1.0, 1.0, 1.0],  # [vel, kin, force]
-    'w_jac': 10.0,              # Jacobian正则化
-    'w_hes': 2.0,               # Hessian正则化
+    'alpha': 0.95,              # ReLoBRaLo 指数衰减率（控制"记住过去"的能力）
+    'rho': 0.999,               # ReLoBRaLo Saudade 期望值（控制回溯频率，约每1000步触发一次）
+    'temperature': 1.0,         # Softmax 温度（越小分布越尖锐）
+    'base_weights': [1.0, 1.0, 1.0, 1.0],  # [vel, kin, force_lon, force_lat] 基础缩放因子
+    'w_jac': 10.0,              # Jacobian 正则化固定权重
+    'w_hes': 2.0,               # Hessian 正则化固定权重
 }
 ```
 

@@ -73,8 +73,8 @@ def main():
     # 1. 配置参数
     CONFIG = {
         'paths': {
-            'scaler': 'scaler42.pkl',             
-            'dataset': 'dataset42.pt',            
+            'scaler': 'scaler52.pkl',             
+            'dataset': 'dataset52.pt',            
             'model_save': 'model_weights.pth'   
         },
         'data': {
@@ -105,6 +105,16 @@ def main():
     test_dataset = FlightDataset(data_dict)
     print(f"数据集已加载，共有 {len(test_dataset)} 个序列切片。")
 
+    # 2.1 加载无噪声数据集（用于对比）
+    clean_dataset_path = 'dataset51.pt'
+    test_dataset_clean = None
+    if os.path.exists(clean_dataset_path):
+        data_dict_clean = torch.load(clean_dataset_path, weights_only=False)
+        test_dataset_clean = FlightDataset(data_dict_clean)
+        print(f"无噪声数据集已加载，用于对比显示。")
+    else:
+        print(f"警告: 未找到无噪声数据集 {clean_dataset_path}，将不显示无噪声对比曲线。")
+
     # 3. 实例化模型并加载权重
     net = CoefficientNet().to(device)
     model = AerialSystemODE(
@@ -132,34 +142,53 @@ def main():
         sample_idx = random.randint(10, len(test_dataset) - 10)
         print(f"警告: 尝试 {max_attempts} 次后未找到满足变化要求的样本，使用随机样本。")
 
-    # sample_idx = 426  # 手动指定测试样本
+    # sample_idx = 359  # 手动指定测试样本
     print(f"本次抽取的测试切片 Index: {sample_idx} / {len(test_dataset)}")
     sample = test_dataset[sample_idx]
-    
-    x0 = sample['x0'].unsqueeze(0).to(device)                         
-    controls = sample['controls'].unsqueeze(0).to(device)             
-    gt_states_norm = sample['gt_states_norm'].unsqueeze(0).to(device) 
+
+    x0 = sample['x0'].unsqueeze(0).to(device)
+    controls = sample['controls'].unsqueeze(0).to(device)
+    gt_states_norm = sample['gt_states_norm'].unsqueeze(0).to(device)
     gt_force_real = sample['gt_force'].unsqueeze(0).to(device)
+
+    # 4.1 提取无噪声数据（如果可用）
+    gt_states_norm_clean = None
+    gt_force_real_clean = None
+    if test_dataset_clean is not None:
+        sample_clean = test_dataset_clean[sample_idx]
+        gt_states_norm_clean = sample_clean['gt_states_norm'].unsqueeze(0).to(device)
+        gt_force_real_clean = sample_clean['gt_force'].unsqueeze(0).to(device)
 
     T = CONFIG['data']['window_size']
     t_span = torch.linspace(0, (T - 1) * CONFIG['data']['dt'], T).to(device)
 
-    with torch.no_grad(): 
+    with torch.no_grad():
         model.set_control_context(t_span, controls)
         pred_traj_norm = odeint(model, x0, t_span, method='rk4').permute(1, 0, 2)
-        force_dict = model.predict_forces_and_moments(gt_states_norm, controls)
+
+        # 关键修改：使用预测轨迹计算力和力矩，而不是带噪声的真实状态
+        # 这样可以避免噪声对力和力矩预测的影响
+        force_dict = model.predict_forces_and_moments(pred_traj_norm, controls)
         pred_force_real = force_dict['pred_force'] # (1, T, 6)
 
     # 5. 反归一化为物理单位
     pred_flat = pred_traj_norm.squeeze(0)
     gt_flat = gt_states_norm.squeeze(0)
-    
+
     pred_real = scaler.inverse_transform_vector(pred_flat, state_keys).cpu().numpy()
     gt_real = scaler.inverse_transform_vector(gt_flat, state_keys).cpu().numpy()
     time_axis = t_span.cpu().numpy()
 
     gt_force_np = gt_force_real.squeeze(0).cpu().numpy()
     pred_force_np = pred_force_real.squeeze(0).cpu().numpy()
+
+    # 5.1 反归一化无噪声数据（如果可用）
+    gt_real_clean = None
+    gt_force_np_clean = None
+    if gt_states_norm_clean is not None:
+        gt_flat_clean = gt_states_norm_clean.squeeze(0)
+        gt_real_clean = scaler.inverse_transform_vector(gt_flat_clean, state_keys).cpu().numpy()
+        gt_force_np_clean = gt_force_real_clean.squeeze(0).cpu().numpy()
 
     # 6. 创建结果保存文件夹
     current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -178,7 +207,14 @@ def main():
         col = i % 3
         ax = axes[row, col]
 
-        ax.plot(time_axis, gt_force_np[:, i], label='Ground Truth', color='black', linewidth=2)
+        # 绘制带噪声的真实曲线
+        ax.plot(time_axis, gt_force_np[:, i], label='Ground Truth (Noisy)', color='black', linewidth=2)
+
+        # 绘制无噪声的真实曲线（如果可用）
+        if gt_force_np_clean is not None:
+            ax.plot(time_axis, gt_force_np_clean[:, i], label='Ground Truth (Clean)', color='blue', linestyle=':', linewidth=2)
+
+        # 绘制预测曲线
         ax.plot(time_axis, pred_force_np[:, i], label='Prediction', color='red', linestyle='--', linewidth=2)
 
         ax.set_title(f'[{key}]', fontweight='bold')
@@ -226,7 +262,14 @@ def main():
         ax = axes2[row, col]
 
         # 前 6 个状态对应索引 0~5
-        ax.plot(time_axis, gt_real[:, i], label='Ground Truth', color='black', linewidth=2)
+        # 绘制带噪声的真实曲线
+        ax.plot(time_axis, gt_real[:, i], label='Ground Truth (Noisy)', color='black', linewidth=2)
+
+        # 绘制无噪声的真实曲线（如果可用）
+        if gt_real_clean is not None:
+            ax.plot(time_axis, gt_real_clean[:, i], label='Ground Truth (Clean)', color='blue', linestyle=':', linewidth=2)
+
+        # 绘制预测曲线
         ax.plot(time_axis, pred_real[:, i], label='Prediction (Integration)', color='red', linestyle='--', linewidth=2)
 
         ax.set_title(f'[{key}]', fontweight='bold')
@@ -270,7 +313,14 @@ def main():
         col = i % 3
         ax = axes3[row, col]
 
-        ax.plot(time_axis, gt_real[:, state_idx], label='Ground Truth', color='black', linewidth=2)
+        # 绘制带噪声的真实曲线
+        ax.plot(time_axis, gt_real[:, state_idx], label='Ground Truth (Noisy)', color='black', linewidth=2)
+
+        # 绘制无噪声的真实曲线（如果可用）
+        if gt_real_clean is not None:
+            ax.plot(time_axis, gt_real_clean[:, state_idx], label='Ground Truth (Clean)', color='blue', linestyle=':', linewidth=2)
+
+        # 绘制预测曲线
         ax.plot(time_axis, pred_real[:, state_idx], label='Prediction (Integration)', color='red', linestyle='--', linewidth=2)
 
         ax.set_title(f'[{key}]', fontweight='bold')

@@ -128,8 +128,8 @@ def pretrain():
     }
     
     # 路径配置
-    csv_path = 'Document42.csv'
-    scaler_path = 'scaler42.pkl'
+    csv_path = 'Document52.csv'
+    scaler_path = 'scaler52.pkl'
     model_save_path = 'pretrained_coeffs.pth'
     
     dataset = StaticAeroDataset(csv_path, scaler_path, props)

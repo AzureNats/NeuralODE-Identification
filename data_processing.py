@@ -99,9 +99,9 @@ class FlightDataPreprocessor:
         # 2. 经纬度转 NED
         df = self._convert_gps_to_ned(df)
         df_raw_backup = df.copy()
-        
+
         # 3. 低通滤波
-        # df = self._apply_low_pass_filter(df)
+        df = self._apply_low_pass_filter(df)
 
         # 4. 状态变量重构
         df = self._reconstruct_state_variables(df, is_windless)
@@ -223,40 +223,45 @@ class FlightDataPreprocessor:
     
     def _apply_low_pass_filter(self, df):
         """
-        对传感器噪声数据进行零相位低通滤波
+        对IMU噪声数据进行零相位低通滤波。
+        仅滤波添加了噪声的通道(ax, ay, az, p, q, r)，
+        姿态角和地速未加噪声，无需滤波。
 
         Args:
             pd.DataFrame: 坐标转换后的数据
-        
+
         Returns:
             pd.DataFrame: 低通滤波后的数据
         """
-        print("正在对数据进行零相位低通滤波...")
-        
-        # 滤波器参数
-        cutoff_freq = 10.0  # Hz
+        print("正在对IMU数据进行零相位低通滤波...")
+
         nyquist = 0.5 * (1.0 / self.dt)
-        normal_cutoff = cutoff_freq / nyquist
-        
-        # 设计 Butterworth 滤波器
-        b, a = scipy.signal.butter(2, normal_cutoff, btype='low', analog=False)
-        
-        # 需要滤波的列
-        filter_cols = ['p', 'q', 'r', 'ax', 'ay', 'az']
-        
-        # 如果存在气动数据，也建议滤波
-        for col in ['TAS', 'Q', 'alpha', 'beta']:
-            if col in df.columns:
-                filter_cols.append(col)
-        
-        # 使用 filtfilt 实现零相位滤波
-        for col in filter_cols:
+
+        filter_config = {
+            'cols': ['ax', 'ay', 'az', 'p', 'q', 'r'],
+            'cutoff': 8.0,  # Hz
+            'order': 2
+        }
+
+        cutoff = filter_config['cutoff']
+        order = filter_config['order']
+        cols = filter_config['cols']
+
+        normal_cutoff = cutoff / nyquist
+        b, a = scipy.signal.butter(order, normal_cutoff, btype='low', analog=False)
+
+        filtered_count = 0
+        for col in cols:
             if col in df.columns:
                 try:
                     df[col] = scipy.signal.filtfilt(b, a, df[col].values)
+                    filtered_count += 1
                 except Exception as e:
-                    print(f"警告: 列 {col} 滤波失败: {e}")
-                
+                    print(f"  警告: 列 {col} 滤波失败: {e}")
+
+        if filtered_count > 0:
+            print(f"  -> IMU数据: 已滤波 {filtered_count} 列 (截止频率: {cutoff}Hz)")
+
         return df
     
     def _reconstruct_state_variables(self, df, is_windless):
@@ -362,14 +367,14 @@ class FlightDataPreprocessor:
         # 1. 计算角加速度 (数值微分)
         for col in ['p', 'q', 'r']:
             dot_col = f'dot_{col}'
-            df[dot_col] = np.gradient(df[col].values, self.dt, edge_order=1)
-            # df[dot_col] = savgol_filter(
-            #     df[col].values, 
-            #     window_length = 11,     # 窗口大小 (奇数)
-            #     polyorder = 2,          # 多项式阶数
-            #     deriv = 1,              # 求一阶导
-            #     delta = self.dt         # 自动除以 dt
-            # )
+            # 使用Savitzky-Golay滤波器进行平滑微分（对噪声数据效果更好）
+            df[dot_col] = savgol_filter(
+                df[col].values,
+                window_length = 11,     # 窗口大小 (奇数)
+                polyorder = 2,          # 多项式阶数
+                deriv = 1,              # 求一阶导
+                delta = self.dt         # 自动除以 dt
+            )
             
         # 2. IMU 加速度修正 (杆臂效应)
         ax_imu = df['ax'].values
@@ -623,9 +628,9 @@ class FlightDataPreprocessor:
 if __name__ == "__main__":
     TEST_CONFIG = {
         'paths': {
-            'raw_csv': 'Document42.csv',
-            'scaler': 'scaler42.pkl',
-            'dataset': 'dataset42.pt'
+            'raw_csv': 'Document52.csv',
+            'scaler': 'scaler52.pkl',
+            'dataset': 'dataset52.pt'
         },
         'preprocess': {
             'is_windless': True,
